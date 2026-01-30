@@ -1,0 +1,58 @@
+name: 'Git Configure'
+description: 'Configure git with GPG signing for commits and tags'
+
+inputs:
+  gpg-key-base64:
+    description: 'GPG signing key (base64 encoded)'
+    required: true
+  gpg-key-id:
+    description: 'GPG key ID'
+    required: true
+  user-name:
+    description: 'Git user name'
+    required: false
+    default: 'Housekeeper Bot'
+  user-email:
+    description: 'Git user email'
+    required: false
+    default: 'birnam@wildland.io'
+  sign-commits:
+    description: 'Enable commit signing'
+    required: false
+    default: 'true'
+  sign-tags:
+    description: 'Enable tag signing'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Configure git with GPG signing
+      shell: bash
+      env:
+        GPG_KEY_B64: ${{ inputs.gpg-key-base64 }}
+        GPG_KEY_ID: ${{ inputs.gpg-key-id }}
+        USER_NAME: ${{ inputs.user-name }}
+        USER_EMAIL: ${{ inputs.user-email }}
+        SIGN_COMMITS: ${{ inputs.sign-commits }}
+        SIGN_TAGS: ${{ inputs.sign-tags }}
+      run: |
+        # Import GPG key
+        echo "${GPG_KEY_B64}" | base64 -d | gpg --import
+
+        # Configure git user
+        git config user.name "${USER_NAME}"
+        git config user.email "${USER_EMAIL}"
+        git config user.signingkey "${GPG_KEY_ID}"
+
+        # Configure signing
+        if [[ "${SIGN_COMMITS}" == "true" ]]; then
+          git config commit.gpgsign true
+        fi
+
+        if [[ "${SIGN_TAGS}" == "true" ]]; then
+          git config tag.gpgsign true
+        fi
+
+        echo "Git configured with GPG signing (key: ${GPG_KEY_ID})"

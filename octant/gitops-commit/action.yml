@@ -1,0 +1,298 @@
+name: 'GitOps Commit'
+description: 'Update image tag in GitOps repository with direct commit (with mutex lock)'
+
+inputs:
+  repository:
+    description: 'GitOps repository (org/repo)'
+    required: true
+  token:
+    description: 'GitHub PAT with push access'
+    required: true
+  branch:
+    description: 'Target branch'
+    required: true
+  file-path:
+    description: 'Path to values file (e.g., charts/site/values-development.yaml)'
+    required: true
+  image-tag:
+    description: 'New image tag value'
+    required: true
+  image-repository:
+    description: 'New image repository value (optional)'
+    required: false
+    default: ''
+  commit-message:
+    description: 'Commit message'
+    required: true
+  gpg-key-base64:
+    description: 'GPG signing key (base64 encoded)'
+    required: true
+  gpg-key-id:
+    description: 'GPG key ID'
+    required: true
+  committer-name:
+    description: 'Git committer name'
+    required: false
+    default: 'Housekeeper Bot'
+  committer-email:
+    description: 'Git committer email'
+    required: false
+    default: 'birnam@wildland.io'
+  # Mutex inputs
+  mutex-branch:
+    description: 'Branch to use for mutex lock'
+    required: false
+    default: 'gh-mutex'
+  mutex-enabled:
+    description: 'Enable mutex lock (true/false)'
+    required: false
+    default: 'true'
+
+outputs:
+  commit-sha:
+    description: 'Created commit SHA'
+    value: ${{ steps.push.outputs.commit_sha }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Acquire mutex lock
+      id: mutex-lock
+      if: inputs.mutex-enabled == 'true'
+      shell: bash
+      env:
+        GITHUB_PAT: ${{ inputs.token }}
+        REPOSITORY: ${{ inputs.repository }}
+        MUTEX_BRANCH: ${{ inputs.mutex-branch }}
+      run: |
+        set -e
+
+        MUTEX_DIR="${RUNNER_TEMP}/gitops-mutex"
+        rm -rf "${MUTEX_DIR}"
+        mkdir -p "${MUTEX_DIR}"
+        cd "${MUTEX_DIR}"
+
+        MUTEX_QUEUE_FILE="mutex_queue"
+        REPO_URL="https://x-access-token:${GITHUB_PAT}@github.com/${REPOSITORY}"
+        TICKET_ID="${GITHUB_RUN_ID}-$(date +%s)-$(( RANDOM % 1000 ))-gitops-commit"
+
+        echo "ticket_id=${TICKET_ID}" >> $GITHUB_OUTPUT
+        echo "mutex_dir=${MUTEX_DIR}" >> $GITHUB_OUTPUT
+
+        # Initialize repo
+        git init --quiet
+        git config --local user.name "github-bot"
+        git config --local user.email "github-bot@users.noreply.github.com"
+        git remote add origin "${REPO_URL}"
+
+        # Function to update branch
+        update_branch() {
+          local branch=$1
+          local temp_branch="gh-action-mutex/temp-branch-$(date +%s)"
+          git switch --orphan "${temp_branch}" --quiet
+          git branch -D "${branch}" --quiet 2>/dev/null || true
+          git fetch origin "${branch}" --quiet 2>/dev/null || true
+          git checkout "${branch}" --quiet 2>/dev/null || git switch --orphan "${branch}" --quiet
+        }
+
+        # Function to enqueue
+        enqueue() {
+          local branch=$1
+          local queue_file=$2
+          local ticket_id=$3
+          local has_error=0
+
+          echo "[${ticket_id}] Enqueuing to branch ${branch}, file ${queue_file}"
+
+          update_branch "${branch}"
+
+          touch "${queue_file}"
+
+          # If we are not in the queue, add ourselves
+          if ! grep -qx "${ticket_id}" "${queue_file}" 2>/dev/null; then
+            echo "[${ticket_id}] Adding ourselves to the queue file ${queue_file}"
+            echo "${ticket_id}" >> "${queue_file}"
+
+            git add "${queue_file}"
+            git commit -m "[${ticket_id}] Enqueue" --quiet
+
+            set +e
+            git push --set-upstream origin "${branch}" --quiet 2>&1
+            has_error=$?
+            set -e
+          fi
+
+          if [ $has_error -ne 0 ]; then
+            echo "[${ticket_id}] Push failed, retrying..."
+            sleep 1
+            enqueue "$@"
+          fi
+        }
+
+        # Function to wait for lock
+        wait_for_lock() {
+          local branch=$1
+          local queue_file=$2
+          local ticket_id=$3
+
+          update_branch "${branch}"
+
+          if [ -s "${queue_file}" ]; then
+            cur_lock=$(head -n 1 "${queue_file}")
+            if [ "${cur_lock}" != "${ticket_id}" ]; then
+              echo "[${ticket_id}] Waiting for lock - Current lock assigned to [${cur_lock}]"
+              sleep 5
+              wait_for_lock "$@"
+            fi
+          else
+            echo "[${ticket_id}] ${queue_file} unexpectedly empty, continuing"
+          fi
+        }
+
+        # Acquire lock
+        enqueue "${MUTEX_BRANCH}" "${MUTEX_QUEUE_FILE}" "${TICKET_ID}"
+        wait_for_lock "${MUTEX_BRANCH}" "${MUTEX_QUEUE_FILE}" "${TICKET_ID}"
+
+        echo "Lock successfully acquired"
+
+    - name: Clone repository
+      id: clone
+      shell: bash
+      env:
+        GITHUB_PAT: ${{ inputs.token }}
+        REPOSITORY: ${{ inputs.repository }}
+        BRANCH: ${{ inputs.branch }}
+      run: |
+        set -e
+        GITOPS_DIR="${RUNNER_TEMP}/gitops-repo"
+        rm -rf "${GITOPS_DIR}"
+        git clone "https://x-access-token:${GITHUB_PAT}@github.com/${REPOSITORY}.git" "${GITOPS_DIR}"
+        cd "${GITOPS_DIR}"
+        git checkout "${BRANCH}"
+
+    - name: Configure git with GPG signing
+      shell: bash
+      working-directory: ${{ runner.temp }}/gitops-repo
+      env:
+        GPG_KEY_B64: ${{ inputs.gpg-key-base64 }}
+        GPG_KEY_ID: ${{ inputs.gpg-key-id }}
+        USER_NAME: ${{ inputs.committer-name }}
+        USER_EMAIL: ${{ inputs.committer-email }}
+      run: |
+        # Import GPG key
+        echo "${GPG_KEY_B64}" | base64 -d | gpg --import
+
+        # Configure git user
+        git config user.name "${USER_NAME}"
+        git config user.email "${USER_EMAIL}"
+        git config user.signingkey "${GPG_KEY_ID}"
+
+        git config commit.gpgsign true
+        git config tag.gpgsign true
+
+        echo "Git configured with GPG signing (key: ${GPG_KEY_ID})"
+
+    - name: Update values and push
+      id: push
+      shell: bash
+      working-directory: ${{ runner.temp }}/gitops-repo
+      env:
+        BRANCH: ${{ inputs.branch }}
+        FILE_PATH: ${{ inputs.file-path }}
+        IMAGE_TAG: ${{ inputs.image-tag }}
+        IMAGE_REPOSITORY: ${{ inputs.image-repository }}
+        COMMIT_MESSAGE: ${{ inputs.commit-message }}
+      run: |
+        set -e
+
+        # Update values file
+        yq -i ".image.tag = \"${IMAGE_TAG}\"" "${FILE_PATH}"
+        if [[ -n "$IMAGE_REPOSITORY" ]]; then
+          yq -i ".image.repository = \"${IMAGE_REPOSITORY}\"" "${FILE_PATH}"
+        fi
+
+        # Commit and push
+        git add "${FILE_PATH}"
+
+        if git diff --cached --quiet; then
+          echo "No changes to commit"
+          echo "commit_sha=" >> $GITHUB_OUTPUT
+        else
+          git commit -m "${COMMIT_MESSAGE}"
+          git push origin "${BRANCH}"
+          COMMIT_SHA=$(git rev-parse HEAD)
+          echo "commit_sha=${COMMIT_SHA}" >> $GITHUB_OUTPUT
+          echo "Pushed commit: ${COMMIT_SHA}"
+        fi
+
+    - name: Release mutex lock
+      if: always() && inputs.mutex-enabled == 'true' && steps.mutex-lock.outputs.ticket_id != ''
+      shell: bash
+      env:
+        GITHUB_PAT: ${{ inputs.token }}
+        REPOSITORY: ${{ inputs.repository }}
+        MUTEX_BRANCH: ${{ inputs.mutex-branch }}
+        TICKET_ID: ${{ steps.mutex-lock.outputs.ticket_id }}
+        MUTEX_DIR: ${{ steps.mutex-lock.outputs.mutex_dir }}
+      run: |
+        set -e
+
+        cd "${MUTEX_DIR}"
+
+        MUTEX_QUEUE_FILE="mutex_queue"
+        REPO_URL="https://x-access-token:${GITHUB_PAT}@github.com/${REPOSITORY}"
+
+        # Function to update branch
+        update_branch() {
+          local branch=$1
+          local temp_branch="gh-action-mutex/temp-branch-$(date +%s)"
+          git switch --orphan "${temp_branch}" --quiet
+          git branch -D "${branch}" --quiet 2>/dev/null || true
+          git fetch origin "${branch}" --quiet 2>/dev/null || true
+          git checkout "${branch}" --quiet 2>/dev/null || git switch --orphan "${branch}" --quiet
+        }
+
+        # Function to dequeue
+        dequeue() {
+          local branch=$1
+          local queue_file=$2
+          local ticket_id=$3
+          local has_error=0
+          local message=""
+
+          update_branch "${branch}"
+
+          if [[ "$(head -n 1 "${queue_file}")" == "${ticket_id}" ]]; then
+            echo "[${ticket_id}] Unlocking"
+            message="[${ticket_id}] Unlock"
+            # Remove top line
+            sed -i '' '1d' "${queue_file}" 2>/dev/null || sed -i '1d' "${queue_file}"
+          elif grep -qx "${ticket_id}" "${queue_file}" 2>/dev/null; then
+            echo "[${ticket_id}] Dequeueing. We don't have the lock!"
+            message="[${ticket_id}] Dequeue"
+            # Remove the matching line
+            sed -i '' "/^${ticket_id}$/d" "${queue_file}" 2>/dev/null || sed -i "/^${ticket_id}$/d" "${queue_file}"
+          else
+            echo "[${ticket_id}] Not in queue, nothing to unlock"
+            return 0
+          fi
+
+          git add "${queue_file}"
+          git commit -m "${message}" --quiet
+
+          set +e
+          git push --set-upstream origin "${branch}" --quiet 2>&1
+          has_error=$?
+          set -e
+
+          if [ $has_error -ne 0 ]; then
+            echo "[${ticket_id}] Push failed, retrying..."
+            sleep 1
+            dequeue "$@"
+          fi
+        }
+
+        # Release lock
+        dequeue "${MUTEX_BRANCH}" "${MUTEX_QUEUE_FILE}" "${TICKET_ID}"
+
+        echo "Successfully unlocked"

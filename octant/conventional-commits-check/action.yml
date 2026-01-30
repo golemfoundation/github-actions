@@ -1,0 +1,101 @@
+name: 'Conventional Commits Check'
+description: 'Validate that commit messages follow the conventional commits format'
+
+inputs:
+  base-ref:
+    description: 'Base ref to compare against (e.g., origin/develop)'
+    required: true
+  head-ref:
+    description: 'Head ref to validate'
+    required: false
+    default: 'HEAD'
+
+outputs:
+  valid:
+    description: 'Whether all commits are valid (true/false)'
+    value: ${{ steps.check.outputs.valid }}
+  invalid-count:
+    description: 'Number of invalid commits'
+    value: ${{ steps.check.outputs.invalid_count }}
+  total-count:
+    description: 'Total commits checked'
+    value: ${{ steps.check.outputs.total_count }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate conventional commits
+      id: check
+      shell: bash
+      env:
+        BASE_REF: ${{ inputs.base-ref }}
+        HEAD_REF: ${{ inputs.head-ref }}
+      run: |
+        # Conventional commits regex pattern
+        # Optional scope in parentheses, optional breaking change indicator (!), required colon and space
+        PATTERN='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert|seo)(\([a-zA-Z0-9_-]+\))?(!)?: .+'
+
+        # Get commit SHAs in range
+        COMMITS=$(git log --format='%H' "${BASE_REF}..${HEAD_REF}" 2>/dev/null)
+
+        if [[ -z "${COMMITS}" ]]; then
+          echo "No commits found in range ${BASE_REF}..${HEAD_REF}"
+          echo "valid=true" >> "${GITHUB_OUTPUT}"
+          echo "invalid_count=0" >> "${GITHUB_OUTPUT}"
+          echo "total_count=0" >> "${GITHUB_OUTPUT}"
+          exit 0
+        fi
+
+        total=0
+        invalid=0
+        invalid_messages=()
+
+        echo "Checking commits in range: ${BASE_REF}..${HEAD_REF}"
+        echo ""
+
+        while IFS= read -r sha; do
+          subject=$(git log -1 --format='%s' "${sha}")
+          short_sha="${sha:0:7}"
+          total=$((total + 1))
+
+          if [[ "${subject}" =~ ${PATTERN} ]]; then
+            echo "✓ ${short_sha}: ${subject}"
+          else
+            echo "✗ ${short_sha}: ${subject}"
+            invalid=$((invalid + 1))
+            invalid_messages+=("  - ${short_sha}: ${subject}")
+          fi
+        done <<< "${COMMITS}"
+
+        echo ""
+        echo "Results: ${total} commits checked, ${invalid} invalid"
+
+        echo "valid=$([[ ${invalid} -eq 0 ]] && echo 'true' || echo 'false')" >> "${GITHUB_OUTPUT}"
+        echo "invalid_count=${invalid}" >> "${GITHUB_OUTPUT}"
+        echo "total_count=${total}" >> "${GITHUB_OUTPUT}"
+
+        if [[ ${invalid} -gt 0 ]]; then
+          echo ""
+          echo "=========================================="
+          echo "ERROR: Found ${invalid} commit(s) with invalid message format"
+          echo "=========================================="
+          echo ""
+          echo "Invalid commits:"
+          for msg in "${invalid_messages[@]}"; do
+            echo "${msg}"
+          done
+          echo ""
+          echo "Commit messages must follow the Conventional Commits format:"
+          echo "  <type>[optional scope][!]: <description>"
+          echo ""
+          echo "Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
+          echo ""
+          echo "Examples:"
+          echo "  feat: add user authentication"
+          echo "  fix(api): resolve null pointer exception"
+          echo "  docs: update README with installation steps"
+          echo "  feat!: remove deprecated API endpoints"
+          echo "  refactor(auth): simplify token validation logic"
+          echo ""
+          echo "See: https://www.conventionalcommits.org/"
+          exit 1
+        fi

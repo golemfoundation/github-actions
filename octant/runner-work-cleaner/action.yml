@@ -1,0 +1,12 @@
+name: 'Runner Work Cleaner'
+description: 'Clean up runner work directory on self-hosted runners. Workaround for actions/checkout#211. Use as first step in every job.'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Clean runner work directory
+      shell: bash
+      run: |
+        echo "Starting runner work cleanup..."
+        sudo /usr/local/sbin/gh-runner-work-cleaner "${RUNNER_NAME}" 2>/dev/null
+        mkdir -p "${GITHUB_WORKSPACE}"

@@ -1,0 +1,128 @@
+name: 'Docker Image Promote'
+description: 'Promote (copy) a Docker image between registries'
+
+inputs:
+  source-registry:
+    description: 'Source registry URL'
+    required: true
+  source-image:
+    description: 'Source image name (without registry)'
+    required: true
+  source-tag:
+    description: 'Source image tag'
+    required: true
+  source-gcp-service-account:
+    description: 'GCP service account for source registry (base64 encoded JSON)'
+    required: true
+  target-registry:
+    description: 'Target registry URL'
+    required: true
+  target-image:
+    description: 'Target image name (without registry)'
+    required: true
+  target-tag:
+    description: 'Target image tag'
+    required: true
+  target-gcp-service-account:
+    description: 'GCP service account for target registry (base64 encoded JSON)'
+    required: true
+  verify-signature:
+    description: 'Verify source image signature before promoting'
+    required: false
+    default: 'true'
+  sign:
+    description: 'Sign the promoted image'
+    required: false
+    default: 'true'
+  signature-issuer:
+    description: 'Expected OIDC issuer for signature verification'
+    required: false
+    default: 'https://token.actions.githubusercontent.com'
+  signature-identity-regexp:
+    description: 'Expected identity regexp for signature verification'
+    required: false
+    default: ''
+
+outputs:
+  digest:
+    description: 'Promoted image digest'
+    value: ${{ steps.digest.outputs.digest }}
+  image-ref:
+    description: 'Full promoted image reference'
+    value: ${{ inputs.target-registry }}/${{ inputs.target-image }}:${{ inputs.target-tag }}
+  image-with-digest:
+    description: 'Full promoted image reference with digest'
+    value: ${{ inputs.target-registry }}/${{ inputs.target-image }}@${{ steps.digest.outputs.digest }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Cosign
+      uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
+
+    - name: Setup gcloud
+      uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2.1.4
+
+    - name: Authenticate to source registry
+      shell: bash
+      env:
+        GCP_SA_KEY: ${{ inputs.source-gcp-service-account }}
+        REGISTRY: ${{ inputs.source-registry }}
+      run: |
+        echo "${GCP_SA_KEY}" | base64 -d > ${RUNNER_TEMP}/source-key.json
+        gcloud auth activate-service-account --key-file=${RUNNER_TEMP}/source-key.json
+        gcloud auth configure-docker "$REGISTRY" --quiet
+
+    - name: Verify source image signature
+      if: inputs.verify-signature == 'true'
+      shell: bash
+      env:
+        SOURCE_IMAGE: ${{ inputs.source-registry }}/${{ inputs.source-image }}:${{ inputs.source-tag }}
+        ISSUER: ${{ inputs.signature-issuer }}
+        IDENTITY_REGEXP: ${{ inputs.signature-identity-regexp }}
+      run: |
+        echo "Verifying signature for ${SOURCE_IMAGE}..."
+        VERIFY_ARGS="--certificate-oidc-issuer ${ISSUER}"
+        if [[ -n "$IDENTITY_REGEXP" ]]; then
+          VERIFY_ARGS="${VERIFY_ARGS} --certificate-identity-regexp ${IDENTITY_REGEXP}"
+        fi
+        cosign verify ${VERIFY_ARGS} "${SOURCE_IMAGE}"
+
+    - name: Authenticate to target registry
+      shell: bash
+      env:
+        GCP_SA_KEY: ${{ inputs.target-gcp-service-account }}
+        REGISTRY: ${{ inputs.target-registry }}
+      run: |
+        echo "${GCP_SA_KEY}" | base64 -d > ${RUNNER_TEMP}/target-key.json
+        gcloud auth activate-service-account --key-file=${RUNNER_TEMP}/target-key.json
+        gcloud auth configure-docker "$REGISTRY" --quiet
+
+    - name: Copy image to target registry
+      shell: bash
+      env:
+        SOURCE_IMAGE: ${{ inputs.source-registry }}/${{ inputs.source-image }}:${{ inputs.source-tag }}
+        TARGET_IMAGE: ${{ inputs.target-registry }}/${{ inputs.target-image }}:${{ inputs.target-tag }}
+      run: |
+        echo "Copying ${SOURCE_IMAGE} to ${TARGET_IMAGE}..."
+        cosign copy "${SOURCE_IMAGE}" "${TARGET_IMAGE}"
+
+    - name: Get image digest
+      id: digest
+      shell: bash
+      env:
+        TARGET_IMAGE: ${{ inputs.target-registry }}/${{ inputs.target-image }}:${{ inputs.target-tag }}
+      run: |
+        DIGEST=$(gcloud artifacts docker images describe "${TARGET_IMAGE}" --format='value(image_summary.digest)')
+        echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+        echo "Image digest: ${DIGEST}"
+
+    - name: Sign the promoted image
+      if: inputs.sign == 'true'
+      shell: bash
+      env:
+        TARGET_IMAGE: ${{ inputs.target-registry }}/${{ inputs.target-image }}:${{ inputs.target-tag }}
+        DIGEST: ${{ steps.digest.outputs.digest }}
+      run: |
+        echo "Signing ${TARGET_IMAGE}@${DIGEST}..."
+        cosign sign --yes "${TARGET_IMAGE}@${DIGEST}"

@@ -1,0 +1,116 @@
+name: 'Release Prepare'
+description: 'Prepare production release info (detect source, calculate version, generate changelog)'
+
+inputs:
+  source:
+    description: 'Dev tag (X.Y.Z-develop.N) or branch name (master)'
+    required: true
+  master-branch:
+    description: 'Production branch name'
+    required: false
+    default: 'master'
+  github-token:
+    description: 'GitHub token for git operations'
+    required: true
+
+outputs:
+  source-type:
+    description: 'Source type: dev-tag or hotfix'
+    value: ${{ steps.detect.outputs.source_type }}
+  source-ref:
+    description: 'Git ref (refs/tags/X.Y.Z-develop.N or origin/master)'
+    value: ${{ steps.detect.outputs.source_ref }}
+  source-image-tag:
+    description: 'Image tag (empty for hotfix)'
+    value: ${{ steps.detect.outputs.source_image_tag }}
+  last-release:
+    description: 'Last production tag (X.Y.Z)'
+    value: ${{ steps.version.outputs.last_release }}
+  proposed-version:
+    description: 'Calculated new version'
+    value: ${{ steps.version.outputs.proposed_version }}
+  bump-type:
+    description: 'Version bump type: patch/minor/major'
+    value: ${{ steps.version.outputs.bump_type }}
+  changelog:
+    description: 'Generated changelog markdown'
+    value: ${{ steps.changelog.outputs.content }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Detect source type
+      id: detect
+      shell: bash
+      env:
+        SOURCE: ${{ inputs.source }}
+        MASTER_BRANCH: ${{ inputs.master-branch }}
+      run: |
+        git fetch --all --tags
+
+        if [[ "$SOURCE" == "$MASTER_BRANCH" ]]; then
+          echo "Source is $MASTER_BRANCH branch (hotfix)"
+          echo "source_type=hotfix" >> $GITHUB_OUTPUT
+          echo "source_ref=origin/${SOURCE}" >> $GITHUB_OUTPUT
+          echo "source_image_tag=" >> $GITHUB_OUTPUT
+        elif [[ "$SOURCE" =~ ^[0-9]+\.[0-9]+\.[0-9]+-develop\.[0-9]+$ ]]; then
+          echo "Source is dev tag: $SOURCE"
+          if ! git rev-parse "refs/tags/${SOURCE}" >/dev/null 2>&1; then
+            echo "Error: Tag ${SOURCE} does not exist"
+            exit 1
+          fi
+          echo "source_type=dev-tag" >> $GITHUB_OUTPUT
+          echo "source_ref=refs/tags/${SOURCE}" >> $GITHUB_OUTPUT
+          echo "source_image_tag=${SOURCE}" >> $GITHUB_OUTPUT
+        else
+          echo "Error: Invalid source format. Expected '$MASTER_BRANCH' or X.Y.Z-develop.N (e.g., 1.2.3-develop.5)"
+          exit 1
+        fi
+
+    - name: Calculate version and bump type
+      id: version
+      shell: bash
+      env:
+        SOURCE_REF: ${{ steps.detect.outputs.source_ref }}
+      run: |
+        LAST_RELEASE=$(git for-each-ref --sort=-version:refname --format='%(refname:short)' refs/tags | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sed -n '1p')
+        echo "Last production release: ${LAST_RELEASE}"
+        echo "last_release=${LAST_RELEASE}" >> $GITHUB_OUTPUT
+
+        if [[ -z "$LAST_RELEASE" ]]; then
+          echo "ERROR: No release tag found (expected x.y.z)" >&2
+          exit 1
+        fi
+
+        BUMP_TYPE=$(npx conventional-recommended-bump -p conventionalcommits --skip-unstable 2>/dev/null || echo "patch")
+        if [[ -z "$BUMP_TYPE" || "$BUMP_TYPE" == "null" ]]; then
+          BUMP_TYPE="patch"
+        fi
+        echo "bump_type=${BUMP_TYPE}" >> $GITHUB_OUTPUT
+
+        NEW_VERSION=$(npx semver -i "${BUMP_TYPE}" "${LAST_RELEASE}")
+        echo "proposed_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+
+    - name: Generate changelog
+      id: changelog
+      shell: bash
+      env:
+        SOURCE_REF: ${{ steps.detect.outputs.source_ref }}
+        LAST_RELEASE: ${{ steps.version.outputs.last_release }}
+        PROPOSED_VERSION: ${{ steps.version.outputs.proposed_version }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        git-cliff --tag "${PROPOSED_VERSION}" -c .cliff.toml --strip header --ignore-tags '.*develop.*' -- "${LAST_RELEASE}..${SOURCE_REF}" > changelog.md
+
+        COMMIT_COUNT=$(git rev-list --count "${LAST_RELEASE}..${SOURCE_REF}" 2>/dev/null || echo "0")
+        AUTHOR_COUNT=$(git log "${LAST_RELEASE}..${SOURCE_REF}" --pretty=format:"%an" 2>/dev/null | sort -u | wc -l || echo "0")
+
+        echo "" >> changelog.md
+        echo "---" >> changelog.md
+        echo "_${COMMIT_COUNT} commits from ${AUTHOR_COUNT} contributors_" >> changelog.md
+
+        {
+          echo "content<<EOF"
+          cat changelog.md
+          echo "EOF"
+        } >> $GITHUB_OUTPUT

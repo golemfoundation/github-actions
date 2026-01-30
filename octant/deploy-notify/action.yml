@@ -1,0 +1,339 @@
+name: 'Deploy Notify'
+description: 'Combined ArgoCD wait + job summary + Mattermost notification for deployments'
+
+inputs:
+  # ArgoCD configuration
+  argocd-url:
+    description: 'ArgoCD server URL'
+    required: true
+  argocd-token:
+    description: 'ArgoCD access token'
+    required: true
+  application:
+    description: 'ArgoCD application name'
+    required: true
+  timeout-minutes:
+    description: 'Maximum time to wait in minutes'
+    required: false
+    default: '15'
+  poll-interval:
+    description: 'Poll interval in seconds'
+    required: false
+    default: '10'
+
+  # Mattermost configuration
+  mattermost-webhook:
+    description: 'Mattermost webhook URL'
+    required: true
+
+  # Deployment info
+  environment:
+    description: 'Environment name: development, staging, or production'
+    required: true
+  image-tag:
+    description: 'Deployed image tag'
+    required: true
+
+  # Optional extras
+  extra-summary:
+    description: 'Additional markdown to append to job summary (e.g., vulnerability report)'
+    required: false
+    default: ''
+  extra-fields:
+    description: 'Additional MM fields as JSON array [{title, value, short}]'
+    required: false
+    default: '[]'
+
+  # GitHub context (auto-populated in workflows)
+  github-server-url:
+    description: 'GitHub server URL'
+    required: false
+    default: 'https://github.com'
+  github-repository:
+    description: 'GitHub repository (owner/repo)'
+    required: true
+  github-run-id:
+    description: 'GitHub Actions run ID'
+    required: true
+  github-run-number:
+    description: 'GitHub Actions run number'
+    required: true
+
+outputs:
+  status:
+    description: 'Final status: success, failure, timeout'
+    value: ${{ steps.argocd.outputs.status }}
+  sync-status:
+    description: 'ArgoCD sync status'
+    value: ${{ steps.argocd.outputs.sync_status }}
+  health-status:
+    description: 'ArgoCD health status'
+    value: ${{ steps.argocd.outputs.health_status }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Trigger refresh and wait for ArgoCD sync
+      id: argocd
+      shell: bash
+      env:
+        ARGOCD_URL: ${{ inputs.argocd-url }}
+        ARGOCD_TOKEN: ${{ inputs.argocd-token }}
+        APP_NAME: ${{ inputs.application }}
+        TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+        POLL_INTERVAL: ${{ inputs.poll-interval }}
+      run: |
+        # Function to get app status
+        get_app_status() {
+          curl -sf -L \
+            -H "Authorization: Bearer ${ARGOCD_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${ARGOCD_URL}/api/v1/applications/${APP_NAME}" 2>/dev/null || echo '{}'
+        }
+
+        # Function to trigger hard refresh
+        trigger_refresh() {
+          echo "Triggering hard refresh on ${APP_NAME}..."
+          curl -sf -L \
+            -H "Authorization: Bearer ${ARGOCD_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${ARGOCD_URL}/api/v1/applications/${APP_NAME}?refresh=hard" 2>/dev/null || echo '{}'
+        }
+
+        # Get initial state before refresh
+        echo "Getting initial application state..."
+        INITIAL_RESPONSE=$(get_app_status)
+        INITIAL_REVISION=$(echo "$INITIAL_RESPONSE" | jq -r '.status.sync.revision // "unknown"')
+        INITIAL_SYNC=$(echo "$INITIAL_RESPONSE" | jq -r '.status.sync.status // "Unknown"')
+        echo "Initial state - Sync: ${INITIAL_SYNC}, Revision: ${INITIAL_REVISION}"
+
+        # Trigger hard refresh to force ArgoCD to detect changes
+        trigger_refresh > /dev/null
+
+        # Wait for ArgoCD to detect changes (OutOfSync) or confirm no changes needed
+        # This prevents false positives when webhook hasn't triggered yet
+        echo "Waiting for ArgoCD to detect changes..."
+        REFRESH_WAIT_MAX=12  # 12 * 5s = 60s max wait for refresh
+        REFRESH_WAIT=0
+        CHANGES_DETECTED=false
+
+        while [ $REFRESH_WAIT -lt $REFRESH_WAIT_MAX ]; do
+          REFRESH_WAIT=$((REFRESH_WAIT + 1))
+          sleep 5
+
+          RESPONSE=$(get_app_status)
+          SYNC_STATUS=$(echo "$RESPONSE" | jq -r '.status.sync.status // "Unknown"')
+          HEALTH_STATUS=$(echo "$RESPONSE" | jq -r '.status.health.status // "Unknown"')
+          CURRENT_REVISION=$(echo "$RESPONSE" | jq -r '.status.sync.revision // "unknown"')
+          TARGET_REVISION=$(echo "$RESPONSE" | jq -r '.status.sync.comparedTo.source.targetRevision // "unknown"')
+          REPO_REVISION=$(echo "$RESPONSE" | jq -r '.status.sourceHydrator.lastSuccessfulOperation.sourceHydrator.hydratedRevision // .status.operationState.syncResult.revision // "unknown"')
+
+          echo "Refresh check $REFRESH_WAIT/$REFRESH_WAIT_MAX - Sync: $SYNC_STATUS, Health: $HEALTH_STATUS, Rev: $CURRENT_REVISION"
+
+          # Changes detected if:
+          # 1. Status is OutOfSync (ArgoCD detected drift)
+          # 2. Status is Syncing (sync already started)
+          # 3. Revision changed from initial (new commit was synced)
+          if [[ "$SYNC_STATUS" == "OutOfSync" ]] || [[ "$SYNC_STATUS" == "Syncing" ]]; then
+            echo "Changes detected - ArgoCD shows ${SYNC_STATUS}"
+            CHANGES_DETECTED=true
+            break
+          fi
+
+          if [[ "$CURRENT_REVISION" != "$INITIAL_REVISION" && "$INITIAL_REVISION" != "unknown" ]]; then
+            echo "Changes detected - revision changed from ${INITIAL_REVISION} to ${CURRENT_REVISION}"
+            CHANGES_DETECTED=true
+            break
+          fi
+
+          # If still showing Synced+Healthy after multiple refreshes, trigger another refresh
+          if [[ "$SYNC_STATUS" == "Synced" && $((REFRESH_WAIT % 3)) -eq 0 ]]; then
+            echo "Still showing Synced, triggering another refresh..."
+            trigger_refresh > /dev/null
+          fi
+        done
+
+        if [[ "$CHANGES_DETECTED" != "true" ]]; then
+          echo "Warning: No changes detected after ${REFRESH_WAIT_MAX} refresh checks"
+          echo "This could mean: 1) No actual changes in GitOps repo, or 2) Sync already completed"
+          echo "Proceeding to final sync check..."
+        fi
+
+        # Now wait for final Synced + Healthy state
+        echo ""
+        echo "Waiting for ArgoCD application ${APP_NAME} to sync and become healthy..."
+
+        MAX_ATTEMPTS=$((TIMEOUT_MINUTES * 60 / POLL_INTERVAL))
+        ATTEMPT=0
+
+        while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+          ATTEMPT=$((ATTEMPT + 1))
+          echo "Sync check $ATTEMPT/$MAX_ATTEMPTS"
+
+          RESPONSE=$(get_app_status)
+          SYNC_STATUS=$(echo "$RESPONSE" | jq -r '.status.sync.status // "Unknown"')
+          HEALTH_STATUS=$(echo "$RESPONSE" | jq -r '.status.health.status // "Unknown"')
+          CURRENT_REVISION=$(echo "$RESPONSE" | jq -r '.status.sync.revision // "unknown"')
+
+          echo "Sync: $SYNC_STATUS, Health: $HEALTH_STATUS, Revision: $CURRENT_REVISION"
+
+          echo "sync_status=$SYNC_STATUS" >> $GITHUB_OUTPUT
+          echo "health_status=$HEALTH_STATUS" >> $GITHUB_OUTPUT
+
+          if [[ "$SYNC_STATUS" == "Synced" && "$HEALTH_STATUS" == "Healthy" ]]; then
+            # Double-check: if we detected changes, verify revision actually changed
+            if [[ "$CHANGES_DETECTED" == "true" || "$CURRENT_REVISION" != "$INITIAL_REVISION" || "$INITIAL_REVISION" == "unknown" ]]; then
+              echo "status=success" >> $GITHUB_OUTPUT
+              echo "Application synced and healthy! Revision: $CURRENT_REVISION"
+              exit 0
+            else
+              # Edge case: still same revision, might be stale - trigger one more refresh
+              echo "Warning: Synced+Healthy but revision unchanged, triggering refresh..."
+              trigger_refresh > /dev/null
+              sleep 5
+            fi
+          fi
+
+          if [[ "$HEALTH_STATUS" == "Degraded" ]]; then
+            echo "Application is degraded, failing early"
+            echo "status=failure" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          sleep "$POLL_INTERVAL"
+        done
+
+        echo "Timeout waiting for deployment"
+        echo "status=timeout" >> $GITHUB_OUTPUT
+        exit 1
+
+    - name: Write job summary
+      if: always()
+      shell: bash
+      env:
+        STATUS: ${{ steps.argocd.outputs.status }}
+        SYNC_STATUS: ${{ steps.argocd.outputs.sync_status }}
+        HEALTH_STATUS: ${{ steps.argocd.outputs.health_status }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        APP_NAME: ${{ inputs.application }}
+        IMAGE_TAG: ${{ inputs.image-tag }}
+        EXTRA_SUMMARY: ${{ inputs.extra-summary }}
+        GITHUB_SERVER_URL: ${{ inputs.github-server-url }}
+        REPO: ${{ inputs.github-repository }}
+        RUN_ID: ${{ inputs.github-run-id }}
+        RUN_NUMBER: ${{ inputs.github-run-number }}
+      run: |
+        # Determine icon and title based on status
+        case "$STATUS" in
+          success)
+            ICON="✅"
+            TITLE="Deployment Successful"
+            ;;
+          timeout)
+            ICON="⏱️"
+            TITLE="Deployment Timed Out"
+            ;;
+          *)
+            ICON="❌"
+            TITLE="Deployment Failed"
+            ;;
+        esac
+
+        # Capitalize environment for display
+        ENV_DISPLAY=$(echo "$ENVIRONMENT" | sed 's/./\U&/')
+
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## $ICON $ENV_DISPLAY $TITLE
+
+        | Property | Value |
+        |----------|-------|
+        | **Application** | \`$APP_NAME\` |
+        | **Environment** | $ENV_DISPLAY |
+        | **Image Tag** | \`$IMAGE_TAG\` |
+        | **Sync Status** | $SYNC_STATUS |
+        | **Health Status** | $HEALTH_STATUS |
+        | **Workflow Run** | [#$RUN_NUMBER]($GITHUB_SERVER_URL/$REPO/actions/runs/$RUN_ID) |
+        EOF
+
+        # Append extra summary if provided
+        if [[ -n "$EXTRA_SUMMARY" ]]; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "$EXTRA_SUMMARY" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Send Mattermost notification
+      if: always()
+      shell: bash
+      env:
+        WEBHOOK_URL: ${{ inputs.mattermost-webhook }}
+        STATUS: ${{ steps.argocd.outputs.status }}
+        APP_NAME: ${{ inputs.application }}
+        IMAGE_TAG: ${{ inputs.image-tag }}
+        SYNC_STATUS: ${{ steps.argocd.outputs.sync_status }}
+        HEALTH_STATUS: ${{ steps.argocd.outputs.health_status }}
+        EXTRA_FIELDS: ${{ inputs.extra-fields }}
+        GITHUB_SERVER_URL: ${{ inputs.github-server-url }}
+        REPO: ${{ inputs.github-repository }}
+        RUN_ID: ${{ inputs.github-run-id }}
+        RUN_NUMBER: ${{ inputs.github-run-number }}
+      run: |
+        # Determine color, icon, and title based on status
+        case "$STATUS" in
+          success)
+            COLOR="#36a64f"
+            ICON=":white_check_mark:"
+            STATUS_TEXT="deployed successfully"
+            ;;
+          timeout)
+            COLOR="#ff9800"
+            ICON=":hourglass:"
+            STATUS_TEXT="deployment timed out"
+            ;;
+          *)
+            COLOR="#dc3545"
+            ICON=":x:"
+            STATUS_TEXT="deployment failed"
+            ;;
+        esac
+
+        TITLE="${APP_NAME} ${STATUS_TEXT}"
+
+        # Build base fields
+        BASE_FIELDS=$(jq -n \
+          --arg tag "$IMAGE_TAG" \
+          --arg workflow "[Run #${RUN_NUMBER}](${GITHUB_SERVER_URL}/${REPO}/actions/runs/${RUN_ID})" \
+          --arg sync "$SYNC_STATUS" \
+          --arg health "$HEALTH_STATUS" \
+          '[
+            {"title": "Image Tag", "value": "`\($tag)`", "short": true},
+            {"title": "Workflow", "value": $workflow, "short": true},
+            {"title": "Sync Status", "value": $sync, "short": true},
+            {"title": "Health Status", "value": $health, "short": true}
+          ]')
+
+        # Merge with extra fields if provided
+        EXTRA_FIELDS_JSON=$(echo "$EXTRA_FIELDS" | jq -c 'if type == "array" then . else [] end')
+        ALL_FIELDS=$(echo "$BASE_FIELDS" "$EXTRA_FIELDS_JSON" | jq -s 'add')
+
+        PAYLOAD=$(jq -n \
+          --arg color "$COLOR" \
+          --arg icon "$ICON" \
+          --arg title "$TITLE" \
+          --argjson fields "$ALL_FIELDS" \
+          '{
+            username: "GitHub Actions",
+            icon_emoji: ":github:",
+            attachments: [{
+              color: $color,
+              title: "\($icon) \($title)",
+              fields: $fields
+            }]
+          }')
+
+        if [[ -n "$WEBHOOK_URL" ]]; then
+          curl -sf -X POST -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "$WEBHOOK_URL" || echo "Warning: Failed to send Mattermost notification"
+        else
+          echo "Warning: Webhook URL not configured, skipping notification"
+        fi

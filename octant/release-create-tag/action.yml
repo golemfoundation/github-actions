@@ -1,0 +1,71 @@
+name: 'Release Create Tag'
+description: 'Create production release tag after approval'
+
+inputs:
+  source-type:
+    description: 'Source type: dev-tag or hotfix'
+    required: true
+  source-ref:
+    description: 'Git ref to merge/release'
+    required: true
+  version:
+    description: 'Version to create'
+    required: true
+  master-branch:
+    description: 'Production branch name'
+    required: false
+    default: 'master'
+  github-token:
+    description: 'GitHub token for release-it'
+    required: true
+  changelog-from:
+    description: 'Git ref to generate changelog from (typically last release tag)'
+    required: true
+
+outputs:
+  tag_name:
+    description: 'The tag name created'
+    value: ${{ steps.create-release.outputs.tag_name }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Merge source into master (if dev tag)
+      if: inputs.source-type == 'dev-tag'
+      shell: bash
+      env:
+        SOURCE_REF: ${{ inputs.source-ref }}
+        MASTER_BRANCH: ${{ inputs.master-branch }}
+      run: |
+        git fetch --all --tags
+        git checkout "${MASTER_BRANCH}"
+        git pull origin "${MASTER_BRANCH}"
+        echo "Merging ${SOURCE_REF} into ${MASTER_BRANCH}..."
+        if ! git merge --ff-only "${SOURCE_REF}"; then
+          echo "Error: Cannot fast-forward merge. ${MASTER_BRANCH} may have diverged."
+          exit 1
+        fi
+
+    - name: Checkout master (if hotfix)
+      if: inputs.source-type == 'hotfix'
+      shell: bash
+      env:
+        MASTER_BRANCH: ${{ inputs.master-branch }}
+      run: |
+        git fetch --all --tags
+        git checkout "${MASTER_BRANCH}"
+        git pull origin "${MASTER_BRANCH}"
+
+    - name: Create release
+      id: create-release
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        PROPOSED_VERSION: ${{ inputs.version }}
+        MASTER_BRANCH: ${{ inputs.master-branch }}
+        CHANGELOG_FROM: ${{ inputs.changelog-from }}
+      run: |
+        export GIT_CLIFF_IGNORE_TAGS='.*develop.*'
+        npx release-it "${PROPOSED_VERSION}" --ci
+        echo "tag_name=${PROPOSED_VERSION}" >> $GITHUB_OUTPUT
+        git push origin "${MASTER_BRANCH}" --follow-tags

@@ -1,0 +1,51 @@
+name: 'Release Dev Tag'
+description: 'Calculate next development version and create tag'
+
+inputs:
+  github-token:
+    description: 'GitHub token for release-it'
+    required: true
+
+outputs:
+  version:
+    description: 'The new version created'
+    value: ${{ steps.release.outputs.version }}
+  tag_name:
+    description: 'The tag name created'
+    value: ${{ steps.release.outputs.tag_name }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Create release
+      id: release
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        # Calculate next dev version
+        CURRENT=$(node -p "require('./package.json').version")
+        if [[ "$CURRENT" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-develop\.([0-9]+)$ ]]; then
+          # Already prerelease: 1.2.4-develop.0 → 1.2.4-develop.1
+          BASE="${BASH_REMATCH[1]}"
+          DEV_NUM=$((${BASH_REMATCH[2]} + 1))
+          NEW_VERSION="${BASE}-develop.${DEV_NUM}"
+        else
+          # Stable version: 1.2.4 → 1.2.4-develop.0
+          NEW_VERSION="${CURRENT}-develop.0"
+        fi
+
+        echo "Current version: ${CURRENT}"
+        echo "New version: ${NEW_VERSION}"
+
+        # Set CHANGELOG_FROM for git-cliff (used by release-it hook)
+        export CHANGELOG_FROM=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+
+        # Run release-it with explicit version
+        # --no-github.release: dev tags don't need GitHub releases (only production does)
+        # --git.tagMatch="*-develop.*" --npm.ignoreVersion are optional if we don't want to use .release-it-custom-version.mjs plugin
+        npx release-it "${NEW_VERSION}" --ci --no-github.release 
+
+        echo "version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+        echo "tag_name=${NEW_VERSION}" >> $GITHUB_OUTPUT
+        echo "Successfully created tag: ${NEW_VERSION}"

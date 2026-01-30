@@ -1,0 +1,130 @@
+name: 'Write Release Summary'
+description: 'Write unified job summary for release workflows'
+
+inputs:
+  type:
+    description: 'Summary type: preview or complete'
+    required: true
+  source:
+    description: 'Source input'
+    required: true
+  source-type:
+    description: 'Source type: dev-tag or hotfix'
+    required: true
+  current-version:
+    description: 'Current version (for preview)'
+    required: false
+  proposed-version:
+    description: 'Version being released'
+    required: true
+  bump-type:
+    description: 'Version bump type: patch/minor/major (for preview)'
+    required: false
+  changelog:
+    description: 'Changelog markdown'
+    required: false
+  service-name:
+    description: 'Service/application name'
+    required: false
+    default: 'site'
+  gitops-pr-url:
+    description: 'GitOps PR URL (for complete)'
+    required: false
+  gitops-pr-number:
+    description: 'GitOps PR number (for complete)'
+    required: false
+  sync-pr-url:
+    description: 'Sync PR URL (for complete)'
+    required: false
+  vuln-report:
+    description: 'Vulnerability scan report (for complete)'
+    required: false
+  github-server-url:
+    description: 'GitHub server URL'
+    required: false
+    default: 'https://github.com'
+  github-repository:
+    description: 'Repository in owner/repo format'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Write preview summary
+      if: inputs.type == 'preview'
+      shell: bash
+      env:
+        SOURCE: ${{ inputs.source }}
+        SOURCE_TYPE: ${{ inputs.source-type }}
+        CURRENT_VERSION: ${{ inputs.current-version }}
+        PROPOSED_VERSION: ${{ inputs.proposed-version }}
+        BUMP_TYPE: ${{ inputs.bump-type }}
+        CHANGELOG: ${{ inputs.changelog }}
+      run: |
+        SOURCE_TYPE_LABEL="Feature Release"
+        SOURCE_TYPE_EMOJI="✨"
+        if [[ "$SOURCE_TYPE" == "hotfix" ]]; then
+          SOURCE_TYPE_LABEL="Hotfix"
+          SOURCE_TYPE_EMOJI="🔥"
+        fi
+
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## 🚀 Production Release Preview
+
+        | Property | Value |
+        |----------|-------|
+        | **Source** | \`${SOURCE}\` |
+        | **Source Type** | ${SOURCE_TYPE_EMOJI} ${SOURCE_TYPE_LABEL} |
+        | **Current Version** | \`${CURRENT_VERSION}\` |
+        | **Proposed Version** | \`${PROPOSED_VERSION}\` |
+        | **Bump Type** | \`${BUMP_TYPE}\` |
+
+        ---
+
+        ## Changelog
+
+        ${CHANGELOG}
+
+        ---
+
+        ⏳ **Waiting for approval...**
+
+        Approve the \`release-and-deploy\` job to continue with the release.
+        EOF
+
+    - name: Write complete summary
+      if: inputs.type == 'complete'
+      shell: bash
+      env:
+        SOURCE: ${{ inputs.source }}
+        SOURCE_TYPE: ${{ inputs.source-type }}
+        PROPOSED_VERSION: ${{ inputs.proposed-version }}
+        SERVICE_NAME: ${{ inputs.service-name }}
+        GITOPS_PR_URL: ${{ inputs.gitops-pr-url }}
+        GITOPS_PR_NUMBER: ${{ inputs.gitops-pr-number }}
+        SYNC_PR_URL: ${{ inputs.sync-pr-url }}
+        VULN_REPORT: ${{ inputs.vuln-report }}
+        GITHUB_SERVER_URL: ${{ inputs.github-server-url }}
+        GITHUB_REPOSITORY: ${{ inputs.github-repository }}
+      run: |
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## ✅ Production Release Complete
+
+        | Property | Value |
+        |----------|-------|
+        | **Application** | \`${SERVICE_NAME}\` |
+        | **Source** | \`${SOURCE}\` (${SOURCE_TYPE}) |
+        | **Version** | \`${PROPOSED_VERSION}\` |
+        | **GitOps PR** | [#${GITOPS_PR_NUMBER}](${GITOPS_PR_URL}) |
+        | **Sync PR** | [master → develop](${SYNC_PR_URL}) |
+        | **GitHub Release** | [${PROPOSED_VERSION}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${PROPOSED_VERSION}) |
+
+        ${VULN_REPORT}
+
+        ---
+
+        **Next Steps:**
+        1. Review and merge the GitOps PR to deploy to production
+        2. Review and merge the [Sync PR](${SYNC_PR_URL}) to sync master back to develop
+        3. Monitor ArgoCD for deployment status
+        EOF

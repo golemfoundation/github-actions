@@ -1,0 +1,156 @@
+name: 'GitOps PR'
+description: 'Create a pull request in GitOps repository'
+
+inputs:
+  repository:
+    description: 'GitOps repository (org/repo)'
+    required: true
+  token:
+    description: 'GitHub PAT with push and PR access'
+    required: true
+  base-branch:
+    description: 'PR target branch'
+    required: true
+  head-branch:
+    description: 'PR source branch (will be created)'
+    required: true
+  file-path:
+    description: 'Path to values file (e.g., charts/site/values-production.yaml)'
+    required: true
+  image-tag:
+    description: 'New image tag value'
+    required: true
+  image-repository:
+    description: 'New image repository value (optional)'
+    required: false
+    default: ''
+  pr-title:
+    description: 'Pull request title'
+    required: true
+  pr-body:
+    description: 'Pull request body (markdown)'
+    required: true
+  commit-message:
+    description: 'Commit message'
+    required: true
+  gpg-key-base64:
+    description: 'GPG signing key (base64 encoded)'
+    required: true
+  gpg-key-id:
+    description: 'GPG key ID'
+    required: true
+  committer-name:
+    description: 'Git committer name'
+    required: false
+    default: 'Housekeeper Bot'
+  committer-email:
+    description: 'Git committer email'
+    required: false
+    default: 'birnam@wildland.io'
+
+outputs:
+  pr-number:
+    description: 'Created PR number'
+    value: ${{ steps.create-pr.outputs.pr_number }}
+  pr-url:
+    description: 'Created PR URL'
+    value: ${{ steps.create-pr.outputs.pr_url }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Clone repository
+      shell: bash
+      env:
+        GITHUB_PAT: ${{ inputs.token }}
+        REPOSITORY: ${{ inputs.repository }}
+        BASE_BRANCH: ${{ inputs.base-branch }}
+        HEAD_BRANCH: ${{ inputs.head-branch }}
+      run: |
+        set -e
+        GITOPS_DIR="${RUNNER_TEMP}/gitops-repo"
+        rm -rf "${GITOPS_DIR}"
+        git clone "https://x-access-token:${GITHUB_PAT}@github.com/${REPOSITORY}.git" "${GITOPS_DIR}"
+        cd "${GITOPS_DIR}"
+        git checkout "${BASE_BRANCH}"
+        git checkout -b "${HEAD_BRANCH}"
+
+    - name: Configure git with GPG signing
+      shell: bash
+      working-directory: ${{ runner.temp }}/gitops-repo
+      env:
+        GPG_KEY_B64: ${{ inputs.gpg-key-base64 }}
+        GPG_KEY_ID: ${{ inputs.gpg-key-id }}
+        USER_NAME: ${{ inputs.committer-name }}
+        USER_EMAIL: ${{ inputs.committer-email }}
+        SIGN_COMMITS: 'true'
+        SIGN_TAGS: 'true'
+      run: |
+        # Import GPG key
+        echo "${GPG_KEY_B64}" | base64 -d | gpg --import
+
+        # Configure git user
+        git config user.name "${USER_NAME}"
+        git config user.email "${USER_EMAIL}"
+        git config user.signingkey "${GPG_KEY_ID}"
+
+        # Configure signing
+        if [[ "${SIGN_COMMITS}" == "true" ]]; then
+          git config commit.gpgsign true
+        fi
+
+        if [[ "${SIGN_TAGS}" == "true" ]]; then
+          git config tag.gpgsign true
+        fi
+
+        echo "Git configured with GPG signing (key: ${GPG_KEY_ID})"
+
+    - name: Update values and push
+      id: push
+      shell: bash
+      working-directory: ${{ runner.temp }}/gitops-repo
+      env:
+        HEAD_BRANCH: ${{ inputs.head-branch }}
+        FILE_PATH: ${{ inputs.file-path }}
+        IMAGE_TAG: ${{ inputs.image-tag }}
+        IMAGE_REPOSITORY: ${{ inputs.image-repository }}
+        COMMIT_MESSAGE: ${{ inputs.commit-message }}
+      run: |
+        set -e
+
+        # Update values file
+        yq -i ".image.tag = \"${IMAGE_TAG}\"" "${FILE_PATH}"
+        if [[ -n "$IMAGE_REPOSITORY" ]]; then
+          yq -i ".image.repository = \"${IMAGE_REPOSITORY}\"" "${FILE_PATH}"
+        fi
+
+        # Commit and push
+        git add "${FILE_PATH}"
+        git commit -m "${COMMIT_MESSAGE}"
+        git push origin "${HEAD_BRANCH}"
+
+    - name: Create pull request
+      id: create-pr
+      shell: bash
+      env:
+        GITHUB_PAT: ${{ inputs.token }}
+        REPOSITORY: ${{ inputs.repository }}
+        BASE_BRANCH: ${{ inputs.base-branch }}
+        HEAD_BRANCH: ${{ inputs.head-branch }}
+        PR_TITLE: ${{ inputs.pr-title }}
+        PR_BODY: ${{ inputs.pr-body }}
+      run: |
+        gh auth login --with-token <<< "${GITHUB_PAT}"
+
+        PR_URL=$(gh pr create \
+          --repo "${REPOSITORY}" \
+          --base "${BASE_BRANCH}" \
+          --head "${HEAD_BRANCH}" \
+          --title "${PR_TITLE}" \
+          --body "${PR_BODY}")
+
+        PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+
+        echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
+        echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+        echo "Created PR: ${PR_URL}"

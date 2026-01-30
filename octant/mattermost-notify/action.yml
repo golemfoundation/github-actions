@@ -1,0 +1,102 @@
+name: 'Mattermost Notification'
+description: 'Send notifications to Mattermost'
+
+inputs:
+  webhook-url:
+    description: 'Mattermost webhook URL'
+    required: true
+  status:
+    description: 'Deployment status: success, failure, pending, timeout, cancelled'
+    required: true
+  title:
+    description: 'Notification title'
+    required: true
+  message:
+    description: 'Additional message (markdown supported)'
+    required: false
+    default: ''
+  fields:
+    description: 'JSON array of fields [{title, value, short}]'
+    required: false
+    default: '[]'
+  mention:
+    description: 'Mention (e.g., @channel, @here, or username)'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Send Mattermost notification
+      shell: bash
+      env:
+        WEBHOOK_URL: ${{ inputs.webhook-url }}
+        STATUS: ${{ inputs.status }}
+        TITLE: ${{ inputs.title }}
+        MESSAGE: ${{ inputs.message }}
+        FIELDS: ${{ inputs.fields }}
+        MENTION: ${{ inputs.mention }}
+      run: |
+        # Determine color and icon based on status
+        case "$STATUS" in
+          success)
+            COLOR="#36a64f"
+            ICON=":white_check_mark:"
+            ;;
+          failure)
+            COLOR="#dc3545"
+            ICON=":x:"
+            ;;
+          pending)
+            COLOR="#007bff"
+            ICON=":hourglass_flowing_sand:"
+            ;;
+          timeout)
+            COLOR="#ff9800"
+            ICON=":hourglass:"
+            ;;
+          cancelled)
+            COLOR="#6c757d"
+            ICON=":no_entry_sign:"
+            ;;
+          *)
+            COLOR="#6c757d"
+            ICON=":information_source:"
+            ;;
+        esac
+
+        # Build the payload
+        MENTION_TEXT=""
+        if [[ -n "$MENTION" ]]; then
+          MENTION_TEXT="${MENTION}"
+        fi
+
+        # Parse fields JSON to attachment fields format
+        FIELDS_JSON=$(echo "$FIELDS" | jq -c 'if type == "array" then . else [] end')
+
+        PAYLOAD=$(jq -n \
+          --arg color "$COLOR" \
+          --arg icon "$ICON" \
+          --arg title "$TITLE" \
+          --arg message "$MESSAGE" \
+          --arg mention "$MENTION_TEXT" \
+          --argjson fields "$FIELDS_JSON" \
+          '{
+            username: "GitHub Actions",
+            icon_emoji: ":github:",
+            text: $mention,
+            attachments: [{
+              color: $color,
+              title: "\($icon) \($title)",
+              text: $message,
+              fields: $fields
+            }]
+          }')
+
+        if [[ -n "$WEBHOOK_URL" ]]; then
+          curl -sf -X POST -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "$WEBHOOK_URL" || echo "Warning: Failed to send Mattermost notification"
+        else
+          echo "Warning: Webhook URL not configured, skipping notification"
+        fi
