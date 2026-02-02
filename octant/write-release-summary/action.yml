@@ -25,8 +25,7 @@ inputs:
     required: false
   service-name:
     description: 'Service/application name'
-    required: false
-    default: 'site'
+    required: true
   gitops-pr-url:
     description: 'GitOps PR URL (for complete)'
     required: false
