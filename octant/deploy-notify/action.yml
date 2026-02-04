@@ -44,6 +44,12 @@ inputs:
     required: false
     default: '[]'
 
+  # Notification control
+  skip_notification:
+    description: 'Skip Mattermost notification (for batch deployments with custom summary)'
+    required: false
+    default: 'false'
+
   # GitHub context (auto-populated in workflows)
   github-server-url:
     description: 'GitHub server URL'
@@ -262,7 +268,7 @@ runs:
         fi
 
     - name: Send Mattermost notification
-      if: always()
+      if: always() && inputs.skip_notification != 'true'
       shell: bash
       env:
         WEBHOOK_URL: ${{ inputs.mattermost-webhook }}
