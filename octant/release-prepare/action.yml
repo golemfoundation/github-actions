@@ -22,7 +22,7 @@ outputs:
     description: 'Source type: dev-tag, production-tag or hotfix'
     value: ${{ steps.detect.outputs.source_type }}
   source-ref:
-    description: 'Git ref (refs/tags/X.Y.Z-develop.N or origin/master)'
+    description: 'Git ref (refs/tags/X.Y.Z-develop.N, origin/master or refs/tags/X.Y.Z for production re-deploy)'
     value: ${{ steps.detect.outputs.source_ref }}
   source-image-tag:
     description: 'Image tag (empty for hotfix)'
@@ -34,7 +34,7 @@ outputs:
     description: 'Calculated new version'
     value: ${{ steps.version.outputs.proposed_version }}
   bump-type:
-    description: 'Version bump type: patch/minor/major'
+    description: 'Version bump type: patch/minor/major/none (none for production re-deploy)'
     value: ${{ steps.version.outputs.bump_type }}
   changelog:
     description: 'Generated changelog markdown'
