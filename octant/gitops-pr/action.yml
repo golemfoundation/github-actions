@@ -14,16 +14,12 @@ inputs:
   head-branch:
     description: 'PR source branch (will be created)'
     required: true
-  file-path:
-    description: 'Path to values file (e.g., charts/site/values-production.yaml)'
+  files:
+    description: 'JSON array of objects: [{"path": "charts/app/values.yaml", "image-repository": "reg/img"}]. image-repository is optional per entry.'
     required: true
   image-tag:
     description: 'New image tag value'
     required: true
-  image-repository:
-    description: 'New image repository value (optional)'
-    required: false
-    default: ''
   pr-title:
     description: 'Pull request title'
     required: true
@@ -111,21 +107,25 @@ runs:
       working-directory: ${{ runner.temp }}/gitops-repo
       env:
         HEAD_BRANCH: ${{ inputs.head-branch }}
-        FILE_PATH: ${{ inputs.file-path }}
+        FILES: ${{ inputs.files }}
         IMAGE_TAG: ${{ inputs.image-tag }}
-        IMAGE_REPOSITORY: ${{ inputs.image-repository }}
         COMMIT_MESSAGE: ${{ inputs.commit-message }}
       run: |
         set -e
 
-        # Update values file
-        yq -i ".image.tag = \"${IMAGE_TAG}\"" "${FILE_PATH}"
-        if [[ -n "$IMAGE_REPOSITORY" ]]; then
-          yq -i ".image.repository = \"${IMAGE_REPOSITORY}\"" "${FILE_PATH}"
-        fi
+        # Update values files
+        echo "$FILES" | jq -c '.[]' | while IFS= read -r entry; do
+          fp=$(echo "$entry" | jq -r '.path')
+          repo=$(echo "$entry" | jq -r '.["image-repository"] // empty')
+
+          yq -i ".image.tag = \"${IMAGE_TAG}\"" "$fp"
+          if [[ -n "$repo" ]]; then
+            yq -i ".image.repository = \"$repo\"" "$fp"
+          fi
+          git add "$fp"
+        done
 
         # Commit and push
-        git add "${FILE_PATH}"
         git commit -m "${COMMIT_MESSAGE}"
         git push origin "${HEAD_BRANCH}"
 

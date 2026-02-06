@@ -11,16 +11,12 @@ inputs:
   branch:
     description: 'Target branch'
     required: true
-  file-path:
-    description: 'Path to values file (e.g., charts/site/values-development.yaml)'
+  files:
+    description: 'JSON array of values file paths to update (e.g., ["charts/admin/values-dev.yaml", "charts/atlas/values-dev.yaml"])'
     required: true
   image-tag:
     description: 'New image tag value'
     required: true
-  image-repository:
-    description: 'New image repository value (optional)'
-    required: false
-    default: ''
   commit-message:
     description: 'Commit message'
     required: true
@@ -198,21 +194,17 @@ runs:
       working-directory: ${{ runner.temp }}/gitops-repo
       env:
         BRANCH: ${{ inputs.branch }}
-        FILE_PATH: ${{ inputs.file-path }}
+        FILES: ${{ inputs.files }}
         IMAGE_TAG: ${{ inputs.image-tag }}
-        IMAGE_REPOSITORY: ${{ inputs.image-repository }}
         COMMIT_MESSAGE: ${{ inputs.commit-message }}
       run: |
         set -e
 
-        # Update values file
-        yq -i ".image.tag = \"${IMAGE_TAG}\"" "${FILE_PATH}"
-        if [[ -n "$IMAGE_REPOSITORY" ]]; then
-          yq -i ".image.repository = \"${IMAGE_REPOSITORY}\"" "${FILE_PATH}"
-        fi
-
-        # Commit and push
-        git add "${FILE_PATH}"
+        # Update values files
+        echo "$FILES" | jq -r '.[]' | while IFS= read -r fp; do
+          yq -i ".image.tag = \"${IMAGE_TAG}\"" "$fp"
+          git add "$fp"
+        done
 
         if git diff --cached --quiet; then
           echo "No changes to commit"
