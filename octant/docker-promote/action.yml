@@ -63,15 +63,18 @@ runs:
     - name: Setup gcloud
       uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a # v2.1.4
 
-    - name: Authenticate to source registry
+    - name: Setup isolated Docker config
       shell: bash
-      env:
-        GCP_SA_KEY: ${{ inputs.source-gcp-service-account }}
-        REGISTRY: ${{ inputs.source-registry }}
       run: |
-        echo "${GCP_SA_KEY}" | base64 -d > ${RUNNER_TEMP}/source-key.json
-        gcloud auth activate-service-account --key-file=${RUNNER_TEMP}/source-key.json
-        gcloud auth configure-docker "$REGISTRY" --quiet
+        mkdir -p ${RUNNER_TEMP}/.docker
+        echo "DOCKER_CONFIG=${RUNNER_TEMP}/.docker" >> $GITHUB_ENV
+
+    - name: Login to source registry
+      uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+      with:
+        registry: ${{ inputs.source-registry }}
+        username: _json_key_base64
+        password: ${{ inputs.source-gcp-service-account }}
 
     - name: Verify source image signature
       if: inputs.verify-signature == 'true'
@@ -88,15 +91,12 @@ runs:
         fi
         cosign verify ${VERIFY_ARGS} "${SOURCE_IMAGE}"
 
-    - name: Authenticate to target registry
-      shell: bash
-      env:
-        GCP_SA_KEY: ${{ inputs.target-gcp-service-account }}
-        REGISTRY: ${{ inputs.target-registry }}
-      run: |
-        echo "${GCP_SA_KEY}" | base64 -d > ${RUNNER_TEMP}/target-key.json
-        gcloud auth activate-service-account --key-file=${RUNNER_TEMP}/target-key.json
-        gcloud auth configure-docker "$REGISTRY" --quiet
+    - name: Login to target registry
+      uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+      with:
+        registry: ${{ inputs.target-registry }}
+        username: _json_key_base64
+        password: ${{ inputs.target-gcp-service-account }}
 
     - name: Copy image to target registry
       shell: bash
@@ -106,6 +106,14 @@ runs:
       run: |
         echo "Copying ${SOURCE_IMAGE} to ${TARGET_IMAGE}..."
         cosign copy "${SOURCE_IMAGE}" "${TARGET_IMAGE}"
+
+    - name: Authenticate gcloud for artifact queries
+      shell: bash
+      env:
+        GCP_SA_KEY: ${{ inputs.target-gcp-service-account }}
+      run: |
+        echo "${GCP_SA_KEY}" | base64 -d > ${RUNNER_TEMP}/target-key.json
+        gcloud auth activate-service-account --key-file=${RUNNER_TEMP}/target-key.json
 
     - name: Get image digest
       id: digest
