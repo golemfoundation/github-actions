@@ -105,7 +105,7 @@ runs:
         TARGET_IMAGE: ${{ inputs.target-registry }}/${{ inputs.target-image }}:${{ inputs.target-tag }}
       run: |
         echo "Copying ${SOURCE_IMAGE} to ${TARGET_IMAGE}..."
-        cosign copy "${SOURCE_IMAGE}" "${TARGET_IMAGE}"
+        cosign copy -f "${SOURCE_IMAGE}" "${TARGET_IMAGE}"
 
     - name: Authenticate gcloud for artifact queries
       shell: bash
