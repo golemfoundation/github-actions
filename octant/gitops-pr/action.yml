@@ -20,6 +20,14 @@ inputs:
   image-tag:
     description: 'New image tag value'
     required: true
+  tag-path:
+    description: 'YAML path to image tag field'
+    required: false
+    default: '.image.tag'
+  repository-path:
+    description: 'YAML path to image repository field'
+    required: false
+    default: '.image.repository'
   pr-title:
     description: 'Pull request title'
     required: true
@@ -109,6 +117,8 @@ runs:
         HEAD_BRANCH: ${{ inputs.head-branch }}
         FILES: ${{ inputs.files }}
         IMAGE_TAG: ${{ inputs.image-tag }}
+        TAG_PATH: ${{ inputs.tag-path }}
+        REPOSITORY_PATH: ${{ inputs.repository-path }}
         COMMIT_MESSAGE: ${{ inputs.commit-message }}
       run: |
         set -e
@@ -118,9 +128,9 @@ runs:
           fp=$(echo "$entry" | jq -r '.path')
           repo=$(echo "$entry" | jq -r '.["image-repository"] // empty')
 
-          yq -i ".image.tag = \"${IMAGE_TAG}\"" "$fp"
+          yq -i "${TAG_PATH} = \"${IMAGE_TAG}\"" "$fp"
           if [[ -n "$repo" ]]; then
-            yq -i ".image.repository = \"$repo\"" "$fp"
+            yq -i "${REPOSITORY_PATH} = \"$repo\"" "$fp"
           fi
           git add "$fp"
         done
