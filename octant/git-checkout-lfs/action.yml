@@ -96,6 +96,10 @@ inputs:
   github-server-url:
     description: The base URL for the GitHub instance that you are trying to clone from, will use environment defaults to fetch from the same instance that the workflow is running from unless specified. Example URLs are https://github.com or https://my-ghes-server.example.com
     required: false
+  lfs-install-local:
+    description: >
+      Whether to install Git LFS locally in the repository with `git lfs install --local`.
+    default: 'false'
 outputs:
   ref:
     description: 'The branch, tag or SHA that was checked out'
@@ -135,7 +139,12 @@ runs:
     # LFS workaround (https://github.com/actions/checkout/issues/415#issuecomment-2143700018)
     - name: LFS checkout
       shell: bash
+      env:
+        GIT_LFS_LOCAL_INSTALL: ${{ inputs.lfs-install-local }}
       run: |
         git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+        if [ "${GIT_LFS_LOCAL_INSTALL}" = "true" ]; then
+          git lfs install --local
+        fi
         git lfs fetch --all
         git lfs checkout
