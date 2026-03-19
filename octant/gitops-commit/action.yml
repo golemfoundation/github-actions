@@ -17,6 +17,10 @@ inputs:
   image-tag:
     description: 'New image tag value'
     required: true
+  tag-path:
+    description: 'YAML path to image tag field'
+    required: false
+    default: '.image.tag'
   commit-message:
     description: 'Commit message'
     required: true
@@ -196,13 +200,14 @@ runs:
         BRANCH: ${{ inputs.branch }}
         FILES: ${{ inputs.files }}
         IMAGE_TAG: ${{ inputs.image-tag }}
+        TAG_PATH: ${{ inputs.tag-path }}
         COMMIT_MESSAGE: ${{ inputs.commit-message }}
       run: |
         set -e
 
         # Update values files
         echo "$FILES" | jq -r '.[]' | while IFS= read -r fp; do
-          yq -i ".image.tag = \"${IMAGE_TAG}\"" "$fp"
+          yq -i "${TAG_PATH} = \"${IMAGE_TAG}\"" "$fp"
           git add "$fp"
         done
 

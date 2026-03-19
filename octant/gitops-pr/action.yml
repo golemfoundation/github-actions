@@ -20,7 +20,7 @@ inputs:
   image-tag:
     description: 'New image tag value'
     required: true
-  tag-path:
+  image-tag-path:
     description: 'YAML path to image tag field'
     required: false
     default: '.image.tag'
@@ -117,7 +117,7 @@ runs:
         HEAD_BRANCH: ${{ inputs.head-branch }}
         FILES: ${{ inputs.files }}
         IMAGE_TAG: ${{ inputs.image-tag }}
-        TAG_PATH: ${{ inputs.tag-path }}
+        TAG_PATH: ${{ inputs.image-tag-path }}
         REPOSITORY_PATH: ${{ inputs.repository-path }}
         COMMIT_MESSAGE: ${{ inputs.commit-message }}
       run: |
