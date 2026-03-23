@@ -1,0 +1,47 @@
+name: 'Publish npm Package'
+description: 'Build and publish an npm package to the configured registry'
+
+inputs:
+  build-command:
+    description: 'Build command to run before publishing'
+    required: false
+    default: 'yarn build'
+  tag:
+    description: 'NPM dist-tag (e.g., develop, latest). Omit for default (latest).'
+    required: false
+    default: ''
+
+outputs:
+  package-name:
+    description: 'Published package name'
+    value: ${{ steps.publish.outputs.package-name }}
+  package-version:
+    description: 'Published package version'
+    value: ${{ steps.publish.outputs.package-version }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Build package
+      shell: bash
+      run: ${{ inputs.build-command }}
+
+    - name: Publish package
+      id: publish
+      shell: bash
+      run: |
+        PACKAGE_NAME=$(node -p "require('./package.json').name")
+        PACKAGE_VERSION=$(node -p "require('./package.json').version")
+
+        echo "Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION}"
+
+        PUBLISH_ARGS=""
+        if [ -n "${{ inputs.tag }}" ]; then
+          PUBLISH_ARGS="--tag ${{ inputs.tag }}"
+        fi
+
+        yarn npm publish ${PUBLISH_ARGS}
+
+        echo "package-name=${PACKAGE_NAME}" >> $GITHUB_OUTPUT
+        echo "package-version=${PACKAGE_VERSION}" >> $GITHUB_OUTPUT
+        echo "Successfully published ${PACKAGE_NAME}@${PACKAGE_VERSION}"
