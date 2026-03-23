@@ -1,0 +1,48 @@
+name: 'Node.js and pnpm Setup'
+description: 'Setup Node.js with Corepack, configure npm auth for private packages, and install dependencies via pnpm'
+
+inputs:
+  node-version:
+    description: 'Node.js version to use'
+    required: false
+    default: '22'
+  pnpm-version:
+    description: 'pnpm version to use'
+    required: false
+    default: '9.15.4'
+  npm-auth-token:
+    description: 'NPM auth token for private @golemfoundation packages'
+    required: false
+    default: ''
+  install-dependencies:
+    description: 'Run pnpm install --frozen-lockfile'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Enable Corepack (and setup pnpm)
+      shell: bash
+      run: |
+        corepack enable
+        corepack prepare pnpm@${{ inputs.pnpm-version }} --activate
+
+    - name: Set npm auth token
+      if: inputs.npm-auth-token != ''
+      shell: bash
+      env:
+        NPM_AUTH_TOKEN: ${{ inputs.npm-auth-token }}
+      run: |
+        echo "//npm.pkg.github.com/:_authToken=${NPM_AUTH_TOKEN}" >> ~/.npmrc
+        echo "@golemfoundation:registry=https://npm.pkg.github.com" >> ~/.npmrc
+
+    - name: Install dependencies
+      if: inputs.install-dependencies == 'true'
+      shell: bash
+      run: pnpm install --frozen-lockfile
