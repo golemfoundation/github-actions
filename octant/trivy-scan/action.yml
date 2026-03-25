@@ -1,0 +1,46 @@
+name: 'Trivy Filesystem Scan'
+description: 'Run Trivy filesystem vulnerability scan and publish results to step summary'
+
+inputs:
+  severity:
+    description: 'Comma-separated list of severity levels to report'
+    required: false
+    default: 'CRITICAL,HIGH'
+  ignore-unfixed:
+    description: 'Ignore vulnerabilities with no available fix'
+    required: false
+    default: 'true'
+  exit-code:
+    description: 'Exit code when vulnerabilities are found (use 0 to not fail the step)'
+    required: false
+    default: '1'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Trivy Scan
+      id: trivy
+      uses: aquasecurity/trivy-action@0.35.0
+      with:
+        scan-type: 'fs'
+        format: 'table'
+        exit-code: ${{ inputs.exit-code }}
+        ignore-unfixed: ${{ inputs.ignore-unfixed }}
+        severity: ${{ inputs.severity }}
+        output: 'trivy.txt'
+
+    - name: Publish Trivy Output to Summary
+      if: always()
+      shell: bash
+      run: |
+        if [[ -s trivy.txt ]]; then
+          {
+            echo "### Trivy Output"
+            echo "<details><summary>Click to expand</summary>"
+            echo ""
+            echo '```'
+            cat trivy.txt
+            echo '```'
+            echo "</details>"
+          } >> $GITHUB_STEP_SUMMARY
+        fi
