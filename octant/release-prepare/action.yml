@@ -131,7 +131,7 @@ runs:
         GIT_CLIFF_VERSION: ${{ inputs.git-cliff-version }}
       run: |
         if [[ ! -f /usr/bin/git-cliff ]]; then
-          curl -sSfL "https://github.com/orhun/git-cliff/releases/download/v${GIT_CLIFF_VERSION}/git-cliff_${GIT_CLIFF_VERSION}_amd64.deb" -o /tmp/git-cliff.deb
+          curl -sSfL "https://github.com/orhun/git-cliff/releases/download/v${GIT_CLIFF_VERSION}/git-cliff-${GIT_CLIFF_VERSION}.deb" -o /tmp/git-cliff.deb
           sudo dpkg -i /tmp/git-cliff.deb
         fi
         git-cliff --version
