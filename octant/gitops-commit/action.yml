@@ -56,6 +56,14 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    - name: Install yq
+      shell: bash
+      run: |
+        if [ ! -f /usr/local/bin/yq ]; then
+          sudo curl -fsSLo /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+        fi
+
     - name: Acquire mutex lock
       id: mutex-lock
       if: inputs.mutex-enabled == 'true'
