@@ -59,9 +59,13 @@ runs:
     - name: Install yq
       shell: bash
       run: |
-        if [ ! -f /usr/local/bin/yq ]; then
-          sudo curl -fsSLo /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
-          sudo chmod +x /usr/local/bin/yq
+        YQ_VERSION="v4.52.5"
+        YQ_SHA256="75d893a0d5940d1019cb7cdc60001d9e876623852c31cfc6267047bc31149fa9"
+        if ! command -v yq &>/dev/null || [[ "$(yq --version 2>/dev/null)" != *"${YQ_VERSION#v}"* ]]; then
+          curl -fsSLo "${RUNNER_TEMP}/yq" "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  ${RUNNER_TEMP}/yq" | sha256sum -c -
+          sudo install "${RUNNER_TEMP}/yq" /usr/local/bin/yq
+          rm -f "${RUNNER_TEMP}/yq"
         fi
 
     - name: Acquire mutex lock
