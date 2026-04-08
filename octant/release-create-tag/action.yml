@@ -21,6 +21,14 @@ inputs:
   changelog-from:
     description: 'Git ref to generate changelog from (typically last release tag)'
     required: true
+  git-cliff-version:
+    description: 'git-cliff version to install'
+    required: false
+    default: '2.12.0'
+  git-cliff-sha256:
+    description: 'SHA256 checksum of the git-cliff .deb package for integrity verification'
+    required: false
+    default: 'ae9eadaac20c3d0a5bcfb47ac79d6898ee5e08d189d0494080b61a79fbb28a97'
 
 outputs:
   tag_name:
@@ -30,6 +38,24 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    - name: Install git-cliff
+      shell: bash
+      env:
+        GIT_CLIFF_VERSION: ${{ inputs.git-cliff-version }}
+        GIT_CLIFF_SHA256: ${{ inputs.git-cliff-sha256 }}
+      run: |
+        if ! command -v git-cliff &>/dev/null || [[ "$(git-cliff --version 2>/dev/null)" != *"${GIT_CLIFF_VERSION}"* ]]; then
+          curl -sSfL "https://github.com/orhun/git-cliff/releases/download/v${GIT_CLIFF_VERSION}/git-cliff-${GIT_CLIFF_VERSION}.deb" -o /tmp/git-cliff.deb
+          if [[ -n "${GIT_CLIFF_SHA256}" ]]; then
+            echo "${GIT_CLIFF_SHA256}  /tmp/git-cliff.deb" | sha256sum -c -
+          else
+            echo "::warning::No SHA256 checksum provided for git-cliff ${GIT_CLIFF_VERSION} — skipping verification"
+          fi
+          sudo dpkg -i /tmp/git-cliff.deb
+          rm -f /tmp/git-cliff.deb
+        fi
+        git-cliff --version
+
     - name: Merge source into master (if dev tag)
       if: inputs.source-type == 'dev-tag'
       shell: bash
