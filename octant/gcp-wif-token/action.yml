@@ -1,0 +1,69 @@
+name: 'GCP WIF Access Token'
+description: >-
+  Mint a short-lived Google Cloud OAuth access token via Workload Identity
+  Federation. Output is NOT registered as a runner mask, so it can be passed
+  across jobs (e.g. into a downstream job's container.credentials.password).
+  google-github-actions/auth@v3 cannot do this because it calls
+  core.setSecret() on its access_token output, which makes GH refuse to
+  propagate the value to job outputs.
+
+inputs:
+  wif-provider:
+    description: 'Full WIF provider resource (projects/N/locations/global/workloadIdentityPools/POOL/providers/PROV)'
+    required: true
+  wif-service-account:
+    description: 'Service account email to impersonate'
+    required: true
+  scope:
+    description: 'OAuth scope for the minted token'
+    required: false
+    default: 'https://www.googleapis.com/auth/cloud-platform'
+  lifetime:
+    description: 'Token lifetime (max 3600s)'
+    required: false
+    default: '3600s'
+
+outputs:
+  access_token:
+    description: >-
+      GCP OAuth 2.0 access token (unmasked — DO NOT echo it in any run: step;
+      use only in inputs like docker/login-action password or
+      container.credentials.password where GH does not log the value).
+    value: ${{ steps.exchange.outputs.access_token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Exchange GitHub OIDC for GCP access token
+      id: exchange
+      shell: bash
+      env:
+        WIF_PROVIDER: ${{ inputs.wif-provider }}
+        WIF_SA: ${{ inputs.wif-service-account }}
+        SCOPE: ${{ inputs.scope }}
+        LIFETIME: ${{ inputs.lifetime }}
+      run: |
+        set -euo pipefail
+        AUDIENCE="//iam.googleapis.com/${WIF_PROVIDER}"
+
+        GH_OIDC=$(curl -sLS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -er .value)
+
+        STS=$(curl -sLS -X POST "https://sts.googleapis.com/v1/token" \
+          -H "Content-Type: application/x-www-form-urlencoded" \
+          --data-urlencode "audience=${AUDIENCE}" \
+          --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+          --data-urlencode "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+          --data-urlencode "scope=https://www.googleapis.com/auth/cloud-platform" \
+          --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+          --data-urlencode "subject_token=${GH_OIDC}" \
+          | jq -er .access_token)
+
+        AT=$(curl -sLS -X POST \
+          "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${WIF_SA}:generateAccessToken" \
+          -H "Authorization: Bearer ${STS}" \
+          -H "Content-Type: application/json" \
+          -d "$(jq -nc --arg scope "${SCOPE}" --arg lifetime "${LIFETIME}" '{scope:[$scope],lifetime:$lifetime}')" \
+          | jq -er .accessToken)
+
+        echo "access_token=${AT}" >> "${GITHUB_OUTPUT}"
