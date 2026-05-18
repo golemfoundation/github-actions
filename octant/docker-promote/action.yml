@@ -113,7 +113,7 @@ runs:
     - name: Authenticate to GCP for source (WIF)
       if: inputs.source-wif-service-account != ''
       id: src-auth
-      uses: google-github-actions/auth@v2
+      uses: google-github-actions/auth@v3
       with:
         workload_identity_provider: ${{ inputs.source-wif-provider }}
         service_account: ${{ inputs.source-wif-service-account }}
@@ -154,7 +154,7 @@ runs:
     - name: Authenticate to GCP for target (WIF)
       if: inputs.target-wif-service-account != ''
       id: tgt-auth
-      uses: google-github-actions/auth@v2
+      uses: google-github-actions/auth@v3
       with:
         workload_identity_provider: ${{ inputs.target-wif-provider }}
         service_account: ${{ inputs.target-wif-service-account }}
