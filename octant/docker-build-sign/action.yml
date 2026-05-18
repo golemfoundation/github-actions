@@ -28,8 +28,17 @@ inputs:
     required: false
     default: ''
   gcp-service-account:
-    description: 'GCP service account key (base64 encoded JSON)'
-    required: true
+    description: 'GCP service account key (base64 encoded JSON). Legacy auth — use wif-* inputs instead.'
+    required: false
+    default: ''
+  wif-provider:
+    description: 'GCP Workload Identity Federation provider (e.g. projects/123/locations/global/workloadIdentityPools/foo/providers/bar)'
+    required: false
+    default: ''
+  wif-service-account:
+    description: 'GCP service account email to impersonate via WIF'
+    required: false
+    default: ''
   cache-image:
     description: 'Cache image reference'
     required: false
@@ -53,6 +62,22 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    - name: Validate auth inputs
+      shell: bash
+      env:
+        SA: ${{ inputs.gcp-service-account }}
+        WIF_P: ${{ inputs.wif-provider }}
+        WIF_SA: ${{ inputs.wif-service-account }}
+      run: |
+        if [[ -n "$WIF_SA" && -n "$WIF_P" ]]; then
+          echo "auth: WIF (${WIF_SA})"
+        elif [[ -n "$SA" ]]; then
+          echo "auth: SA key (legacy)"
+        else
+          echo "::error::Provide either gcp-service-account OR (wif-provider + wif-service-account)"
+          exit 1
+        fi
+
     - name: Install Cosign
       if: inputs.sign == 'true'
       uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
@@ -65,7 +90,25 @@ runs:
         mkdir -p ${RUNNER_TEMP}/.docker
         echo "DOCKER_CONFIG=${RUNNER_TEMP}/.docker" >> $GITHUB_ENV
 
-    - name: Login to Docker registry
+    - name: Authenticate to GCP (WIF)
+      if: inputs.wif-service-account != ''
+      id: wif-auth
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ inputs.wif-provider }}
+        service_account: ${{ inputs.wif-service-account }}
+        token_format: access_token
+
+    - name: Login to Docker registry (WIF)
+      if: inputs.wif-service-account != ''
+      uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+      with:
+        registry: ${{ inputs.registry }}
+        username: oauth2accesstoken
+        password: ${{ steps.wif-auth.outputs.access_token }}
+
+    - name: Login to Docker registry (SA key)
+      if: inputs.wif-service-account == ''
       uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
       with:
         registry: ${{ inputs.registry }}

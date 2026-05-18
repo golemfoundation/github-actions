@@ -12,8 +12,17 @@ inputs:
     description: 'Source image tag'
     required: true
   source-gcp-service-account:
-    description: 'GCP service account for source registry (base64 encoded JSON)'
-    required: true
+    description: 'GCP service account for source registry (base64 encoded JSON). Legacy auth — use source-wif-* instead.'
+    required: false
+    default: ''
+  source-wif-provider:
+    description: 'GCP WIF provider for source registry'
+    required: false
+    default: ''
+  source-wif-service-account:
+    description: 'GCP service account email to impersonate via WIF for source registry'
+    required: false
+    default: ''
   target-registry:
     description: 'Target registry URL'
     required: true
@@ -24,8 +33,17 @@ inputs:
     description: 'Target image tag'
     required: true
   target-gcp-service-account:
-    description: 'GCP service account for target registry (base64 encoded JSON)'
-    required: true
+    description: 'GCP service account for target registry (base64 encoded JSON). Legacy auth — use target-wif-* instead.'
+    required: false
+    default: ''
+  target-wif-provider:
+    description: 'GCP WIF provider for target registry'
+    required: false
+    default: ''
+  target-wif-service-account:
+    description: 'GCP service account email to impersonate via WIF for target registry'
+    required: false
+    default: ''
   verify-signature:
     description: 'Verify source image signature before promoting'
     required: false
@@ -57,13 +75,33 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    - name: Validate auth inputs
+      shell: bash
+      env:
+        SRC_SA: ${{ inputs.source-gcp-service-account }}
+        SRC_WIF_P: ${{ inputs.source-wif-provider }}
+        SRC_WIF_SA: ${{ inputs.source-wif-service-account }}
+        TGT_SA: ${{ inputs.target-gcp-service-account }}
+        TGT_WIF_P: ${{ inputs.target-wif-provider }}
+        TGT_WIF_SA: ${{ inputs.target-wif-service-account }}
+      run: |
+        if [[ -z "$SRC_WIF_SA" || -z "$SRC_WIF_P" ]]; then
+          if [[ -z "$SRC_SA" ]]; then
+            echo "::error::Provide source-gcp-service-account OR (source-wif-provider + source-wif-service-account)"
+            exit 1
+          fi
+        fi
+        if [[ -z "$TGT_WIF_SA" || -z "$TGT_WIF_P" ]]; then
+          if [[ -z "$TGT_SA" ]]; then
+            echo "::error::Provide target-gcp-service-account OR (target-wif-provider + target-wif-service-account)"
+            exit 1
+          fi
+        fi
+
     - name: Install Cosign
       uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
       with:
         cosign-release: 'v2.6.3'
-
-    - name: Setup gcloud
-      uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
     - name: Setup isolated Docker config
       shell: bash
@@ -71,7 +109,26 @@ runs:
         mkdir -p ${RUNNER_TEMP}/.docker
         echo "DOCKER_CONFIG=${RUNNER_TEMP}/.docker" >> $GITHUB_ENV
 
-    - name: Login to source registry
+    # ── Source auth + docker login ───────────────────────────────────────
+    - name: Authenticate to GCP for source (WIF)
+      if: inputs.source-wif-service-account != ''
+      id: src-auth
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ inputs.source-wif-provider }}
+        service_account: ${{ inputs.source-wif-service-account }}
+        token_format: access_token
+
+    - name: Login to source registry (WIF)
+      if: inputs.source-wif-service-account != ''
+      uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+      with:
+        registry: ${{ inputs.source-registry }}
+        username: oauth2accesstoken
+        password: ${{ steps.src-auth.outputs.access_token }}
+
+    - name: Login to source registry (SA key)
+      if: inputs.source-wif-service-account == ''
       uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
       with:
         registry: ${{ inputs.source-registry }}
@@ -93,7 +150,29 @@ runs:
         fi
         cosign verify ${VERIFY_ARGS} "${SOURCE_IMAGE}"
 
-    - name: Login to target registry
+    # ── Target auth + docker login (done last so gcloud is authed as target) ──
+    - name: Authenticate to GCP for target (WIF)
+      if: inputs.target-wif-service-account != ''
+      id: tgt-auth
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ inputs.target-wif-provider }}
+        service_account: ${{ inputs.target-wif-service-account }}
+        token_format: access_token
+
+    - name: Setup gcloud
+      uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+    - name: Login to target registry (WIF)
+      if: inputs.target-wif-service-account != ''
+      uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+      with:
+        registry: ${{ inputs.target-registry }}
+        username: oauth2accesstoken
+        password: ${{ steps.tgt-auth.outputs.access_token }}
+
+    - name: Login to target registry (SA key)
+      if: inputs.target-wif-service-account == ''
       uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
       with:
         registry: ${{ inputs.target-registry }}
@@ -109,7 +188,8 @@ runs:
         echo "Copying ${SOURCE_IMAGE} to ${TARGET_IMAGE}..."
         cosign copy -f "${SOURCE_IMAGE}" "${TARGET_IMAGE}"
 
-    - name: Authenticate gcloud for artifact queries
+    - name: Authenticate gcloud for artifact queries (SA key)
+      if: inputs.target-wif-service-account == ''
       shell: bash
       env:
         GCP_SA_KEY: ${{ inputs.target-gcp-service-account }}
