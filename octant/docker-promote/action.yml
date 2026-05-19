@@ -99,7 +99,7 @@ runs:
         fi
 
     - name: Install Cosign
-      uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       with:
         cosign-release: 'v2.6.3'
 
@@ -113,7 +113,7 @@ runs:
     - name: Authenticate to GCP for source (WIF)
       if: inputs.source-wif-service-account != ''
       id: src-auth
-      uses: google-github-actions/auth@v3
+      uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
       with:
         workload_identity_provider: ${{ inputs.source-wif-provider }}
         service_account: ${{ inputs.source-wif-service-account }}
@@ -121,7 +121,7 @@ runs:
 
     - name: Login to source registry (WIF)
       if: inputs.source-wif-service-account != ''
-      uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+      uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
       with:
         registry: ${{ inputs.source-registry }}
         username: oauth2accesstoken
@@ -129,7 +129,7 @@ runs:
 
     - name: Login to source registry (SA key)
       if: inputs.source-wif-service-account == ''
-      uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+      uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
       with:
         registry: ${{ inputs.source-registry }}
         username: _json_key_base64
@@ -154,7 +154,7 @@ runs:
     - name: Authenticate to GCP for target (WIF)
       if: inputs.target-wif-service-account != ''
       id: tgt-auth
-      uses: google-github-actions/auth@v3
+      uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
       with:
         workload_identity_provider: ${{ inputs.target-wif-provider }}
         service_account: ${{ inputs.target-wif-service-account }}
@@ -165,7 +165,7 @@ runs:
 
     - name: Login to target registry (WIF)
       if: inputs.target-wif-service-account != ''
-      uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+      uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
       with:
         registry: ${{ inputs.target-registry }}
         username: oauth2accesstoken
@@ -173,7 +173,7 @@ runs:
 
     - name: Login to target registry (SA key)
       if: inputs.target-wif-service-account == ''
-      uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+      uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
       with:
         registry: ${{ inputs.target-registry }}
         username: _json_key_base64
