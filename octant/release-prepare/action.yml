@@ -9,6 +9,14 @@ inputs:
     description: 'Production branch name'
     required: false
     default: 'master'
+  develop-branch:
+    description: 'Development branch name (sync-back target after a production release)'
+    required: false
+    default: 'develop'
+  check-branch-sync:
+    description: 'Fail if the previous production release was not synced back: master ahead of develop, or an open master->develop sync PR. Set to false to bypass.'
+    required: false
+    default: 'true'
   github-token:
     description: 'GitHub token for git operations'
     required: true
@@ -51,6 +59,57 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    - name: Verify previous release was synced back to develop
+      if: ${{ inputs.check-branch-sync == 'true' }}
+      shell: bash
+      env:
+        MASTER_BRANCH: ${{ inputs.master-branch }}
+        DEVELOP_BRANCH: ${{ inputs.develop-branch }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+
+        # Every production release ends by opening a master->develop sync PR.
+        # If a previous release's sync PR was never merged, master carries the
+        # version bump + CHANGELOG commit that develop is missing. Starting a new
+        # release on top of that drift is painful to revert, so refuse to proceed.
+
+        if ! git ls-remote --exit-code --heads origin "$DEVELOP_BRANCH" >/dev/null 2>&1; then
+          echo "::notice::Branch '${DEVELOP_BRANCH}' does not exist on origin — skipping sync check."
+          exit 0
+        fi
+
+        git fetch --quiet origin "$MASTER_BRANCH" "$DEVELOP_BRANCH"
+
+        problems=0
+
+        # 1. Branch drift: every commit on master must already be reachable from develop.
+        if git merge-base --is-ancestor "origin/${MASTER_BRANCH}" "origin/${DEVELOP_BRANCH}"; then
+          echo "✓ ${MASTER_BRANCH} is fully merged into ${DEVELOP_BRANCH}"
+        else
+          ahead=$(git rev-list --count "origin/${DEVELOP_BRANCH}..origin/${MASTER_BRANCH}")
+          echo "::error::${MASTER_BRANCH} is ahead of ${DEVELOP_BRANCH} by ${ahead} commit(s) — the previous production release was not synced back."
+          echo "Commits on ${MASTER_BRANCH} missing from ${DEVELOP_BRANCH}:"
+          git log --oneline "origin/${DEVELOP_BRANCH}..origin/${MASTER_BRANCH}"
+          problems=1
+        fi
+
+        # 2. Open sync PR: an unmerged master->develop PR means the sync is still pending.
+        open_pr=$(gh pr list --repo "$REPO" --state open --base "$DEVELOP_BRANCH" --head "$MASTER_BRANCH" --json number,url --jq '.[] | "  #\(.number) \(.url)"' || true)
+        if [[ -n "$open_pr" ]]; then
+          echo "::error::Open ${MASTER_BRANCH}->${DEVELOP_BRANCH} sync PR(s) still pending:"
+          echo "$open_pr"
+          problems=1
+        else
+          echo "✓ No open ${MASTER_BRANCH}->${DEVELOP_BRANCH} sync PR"
+        fi
+
+        if [[ "$problems" -ne 0 ]]; then
+          echo "::error::Refusing to start a new production release: sync back to ${DEVELOP_BRANCH} from the previous release is incomplete. Merge the sync PR (or set check-branch-sync=false to bypass) and re-run."
+          exit 1
+        fi
+
     - name: Detect source type
       id: detect
       shell: bash
