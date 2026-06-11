@@ -6,10 +6,6 @@ inputs:
     description: 'Node.js version to use'
     required: false
     default: '22'
-  pnpm-version:
-    description: 'pnpm version to use'
-    required: false
-    default: '9.15.4'
   npm-auth-token:
     description: 'NPM auth token for private @golemfoundation packages'
     required: false
@@ -30,8 +26,11 @@ runs:
     - name: Enable Corepack (and setup pnpm)
       shell: bash
       run: |
+        if ! jq -e '.packageManager' package.json > /dev/null 2>&1; then
+          echo "::error::package.json must contain a 'packageManager' field (e.g. \"packageManager\": \"pnpm@10.0.0\")"
+          exit 1
+        fi
         corepack enable
-        corepack prepare pnpm@${{ inputs.pnpm-version }} --activate
 
     - name: Set npm auth token
       if: inputs.npm-auth-token != ''
