@@ -60,6 +60,26 @@ inputs:
     description: 'Expected identity regexp for signature verification'
     required: false
     default: ''
+  sentry-auth-token:
+    description: 'Sentry auth token — enables Sentry release promotion when set'
+    required: false
+    default: ''
+  sentry-org:
+    description: 'Sentry organization slug'
+    required: false
+    default: ''
+  sentry-project:
+    description: 'Sentry project slug'
+    required: false
+    default: ''
+  sentry-environment:
+    description: 'Sentry deploy environment'
+    required: false
+    default: 'production'
+  sentry-cli-version:
+    description: 'sentry-cli version to install'
+    required: false
+    default: '3.5.0'
 
 outputs:
   digest:
@@ -216,3 +236,40 @@ runs:
       run: |
         echo "Signing ${TARGET_IMAGE}@${DIGEST}..."
         cosign sign --yes "${TARGET_IMAGE}@${DIGEST}"
+
+    - name: Install sentry-cli
+      if: inputs.sentry-auth-token != ''
+      shell: bash
+      env:
+        SENTRY_CLI_VERSION: ${{ inputs.sentry-cli-version }}
+      run: |
+        mkdir -p "${RUNNER_TEMP}/sentry-bin"
+        curl -sL \
+          "https://github.com/getsentry/sentry-cli/releases/download/${SENTRY_CLI_VERSION}/sentry-cli-Linux-x86_64" \
+          -o "${RUNNER_TEMP}/sentry-bin/sentry-cli"
+        chmod +x "${RUNNER_TEMP}/sentry-bin/sentry-cli"
+        echo "${RUNNER_TEMP}/sentry-bin" >> "${GITHUB_PATH}"
+
+    - name: Create Sentry production release
+      if: inputs.sentry-auth-token != ''
+      shell: bash
+      env:
+        SENTRY_AUTH_TOKEN: ${{ inputs.sentry-auth-token }}
+        SENTRY_ORG: ${{ inputs.sentry-org }}
+        SENTRY_PROJECT: ${{ inputs.sentry-project }}
+        TARGET_VERSION: ${{ inputs.target-tag }}
+      run: |
+        echo "Creating Sentry release ${TARGET_VERSION}..."
+        sentry-cli releases new "${TARGET_VERSION}"
+
+    - name: Finalize Sentry release and create deploy
+      if: inputs.sentry-auth-token != ''
+      shell: bash
+      env:
+        SENTRY_AUTH_TOKEN: ${{ inputs.sentry-auth-token }}
+        SENTRY_ORG: ${{ inputs.sentry-org }}
+        TARGET_VERSION: ${{ inputs.target-tag }}
+        ENVIRONMENT: ${{ inputs.sentry-environment }}
+      run: |
+        sentry-cli releases finalize "${TARGET_VERSION}"
+        sentry-cli releases deploys new --release "${TARGET_VERSION}" -e "${ENVIRONMENT}"
