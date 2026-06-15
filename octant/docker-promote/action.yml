@@ -238,7 +238,7 @@ runs:
         cosign sign --yes "${TARGET_IMAGE}@${DIGEST}"
 
     - name: Install sentry-cli
-      if: inputs.sentry-auth-token != ''
+      if: inputs.sentry-auth-token != '' && inputs.sentry-org != '' && inputs.sentry-project != ''
       shell: bash
       env:
         SENTRY_CLI_VERSION: ${{ inputs.sentry-cli-version }}
@@ -251,7 +251,7 @@ runs:
         echo "${RUNNER_TEMP}/sentry-bin" >> "${GITHUB_PATH}"
 
     - name: Create Sentry production release
-      if: inputs.sentry-auth-token != ''
+      if: inputs.sentry-auth-token != '' && inputs.sentry-org != '' && inputs.sentry-project != ''
       shell: bash
       env:
         SENTRY_AUTH_TOKEN: ${{ inputs.sentry-auth-token }}
@@ -263,7 +263,7 @@ runs:
         sentry-cli releases new "${TARGET_VERSION}"
 
     - name: Finalize Sentry release and create deploy
-      if: inputs.sentry-auth-token != ''
+      if: inputs.sentry-auth-token != '' && inputs.sentry-org != '' && inputs.sentry-project != ''
       shell: bash
       env:
         SENTRY_AUTH_TOKEN: ${{ inputs.sentry-auth-token }}
