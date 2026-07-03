@@ -63,6 +63,7 @@ runs:
       if: ${{ inputs.check-branch-sync == 'true' }}
       shell: bash
       env:
+        SOURCE: ${{ inputs.source }}
         MASTER_BRANCH: ${{ inputs.master-branch }}
         DEVELOP_BRANCH: ${{ inputs.develop-branch }}
         GH_TOKEN: ${{ inputs.github-token }}
@@ -85,7 +86,11 @@ runs:
         problems=0
 
         # 1. Branch drift: every commit on master must already be reachable from develop.
-        if git merge-base --is-ancestor "origin/${MASTER_BRANCH}" "origin/${DEVELOP_BRANCH}"; then
+        # Skipped for hotfixes (source is master): they merge straight into master, so
+        # master is expected to lead develop and the drift check would wrongly block them.
+        if [[ "$SOURCE" == "$MASTER_BRANCH" ]]; then
+          echo "Source is ${MASTER_BRANCH} (hotfix) — skipping ${MASTER_BRANCH}->${DEVELOP_BRANCH} drift check"
+        elif git merge-base --is-ancestor "origin/${MASTER_BRANCH}" "origin/${DEVELOP_BRANCH}"; then
           echo "✓ ${MASTER_BRANCH} is fully merged into ${DEVELOP_BRANCH}"
         else
           ahead=$(git rev-list --count "origin/${DEVELOP_BRANCH}..origin/${MASTER_BRANCH}")
