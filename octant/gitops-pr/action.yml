@@ -151,6 +151,29 @@ runs:
         git commit -m "${COMMIT_MESSAGE}"
         git push origin "${HEAD_BRANCH}"
 
+    - name: Prepare PR body
+      id: pr-body
+      shell: bash
+      env:
+        HEAD_BRANCH: ${{ inputs.head-branch }}
+        PR_BODY: ${{ inputs.pr-body }}
+      run: |
+        set -e
+        BODY_DIR="${RUNNER_TEMP}/gitops-pr-body"
+        rm -rf "${BODY_DIR}"
+        mkdir -p "${BODY_DIR}"
+        printf '%s\n' "${PR_BODY}" > "${BODY_DIR}/pr-body.md"
+
+        echo "path=${BODY_DIR}/pr-body.md" >> "$GITHUB_OUTPUT"
+        echo "artifact-name=pr-body-$(printf '%s' "${HEAD_BRANCH}" | tr -c 'A-Za-z0-9._-' '-')" >> "$GITHUB_OUTPUT"
+
+    - name: Upload full PR body
+      id: upload-pr-body
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ steps.pr-body.outputs.artifact-name }}
+        path: ${{ steps.pr-body.outputs.path }}
+
     - name: Create pull request
       id: create-pr
       shell: bash
@@ -160,8 +183,32 @@ runs:
         BASE_BRANCH: ${{ inputs.base-branch }}
         HEAD_BRANCH: ${{ inputs.head-branch }}
         PR_TITLE: ${{ inputs.pr-title }}
-        PR_BODY: ${{ inputs.pr-body }}
+        FULL_BODY: ${{ steps.pr-body.outputs.path }}
+        ARTIFACT_NAME: ${{ steps.pr-body.outputs.artifact-name }}
+        ARTIFACT_URL: ${{ steps.upload-pr-body.outputs.artifact-url }}
       run: |
+        set -e
+
+        # GitHub rejects PR bodies over 65536 characters
+        BODY_LIMIT=60000
+        BODY_FILE="${RUNNER_TEMP}/gitops-pr-body/pr-body-trimmed.md"
+
+        if [[ $(wc -c < "${FULL_BODY}") -gt ${BODY_LIMIT} ]]; then
+          awk -v limit="${BODY_LIMIT}" '
+            { size += length($0) + 1 }
+            size > limit { exit }
+            { print }
+          ' "${FULL_BODY}" > "${BODY_FILE}"
+          {
+            printf '\n... trimmed ...\n\n'
+            printf 'Full changelog: [%s](%s)\n' \
+              "${ARTIFACT_NAME}" \
+              "${ARTIFACT_URL:-${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}}"
+          } >> "${BODY_FILE}"
+        else
+          cp "${FULL_BODY}" "${BODY_FILE}"
+        fi
+
         gh auth login --with-token <<< "${GITHUB_PAT}"
 
         PR_URL=$(gh pr create \
@@ -169,7 +216,7 @@ runs:
           --base "${BASE_BRANCH}" \
           --head "${HEAD_BRANCH}" \
           --title "${PR_TITLE}" \
-          --body "${PR_BODY}")
+          --body-file "${BODY_FILE}")
 
         PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
 
